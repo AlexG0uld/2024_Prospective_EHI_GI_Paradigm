@@ -1,0 +1,95 @@
+---
+title: "6MSM information (manuscript)"
+author: "Alex Gould"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    latex_engine: xelatex
+  rmarkdown::pdf_document:
+    extra_dependencies: float
+    toc: yes
+html_document:
+  toc: yes
+toc_float: yes
+---
+
+# Setup
+First let us set up the R environment:
+
+## Global options
+
+```{r global options, include = TRUE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      error = FALSE,
+                      eval = TRUE,
+                      dev = c('pdf', 'png'),
+                      width = 60,
+                      fig.align = 'center',
+                      fig.height = 10,
+                      fig.width = 10,
+                      fig.dpi = 300,
+                      fig.pos = "!H",
+                      dpi = 300,
+                      out.extra = "",
+                      message = FALSE,
+                      cache = FALSE,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figs/')
+```
+
+## Library
+
+```{r setup}
+# Load the libraries
+library(xlsx)
+library(tidyverse)
+```
+
+## Parameters
+
+```{r directory}
+data_dir = "..."
+analysis_dir = "..."
+```
+
+## Load Data
+
+```{r load_data}
+## load data here...
+```
+
+# Analysis
+
+## Descriptives
+
+```{r descriptives}
+## S-W test for WBGT data
+shapiro.test(data$wbgt)
+## Mean and SD WBGT
+data %>%
+  dplyr::summarise(mean = mean(wbgt),
+                   sd = sd(wbgt))
+
+## Mean 6MSMS start time in POSIXct format
+mean_speed_march_start_time <- mean(data$speed_march_start_time)
+mean_speed_march_start_time
+
+## S-W test for WBGT data
+shapiro.test(data$duration)
+## Median and IQR for 6MSM duration:
+data %>%
+  dplyr::summarise(median = median(duration),
+                   IQR = IQR(duration))
+```
+
+# Session info
+
+``` {r sessionInfo}
+sinfo <- sessionInfo()
+sinfo
+save.image(paste0(analysis_dir, "/prospective_analysis_manuscript_6MSM_info.Rout"))
+```
