@@ -1,0 +1,256 @@
+---
+title: "GRANNUS 6MSM information"
+author: "Alex Gould"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    latex_engine: xelatex
+  rmarkdown::pdf_document:
+    extra_dependencies: float
+    toc: yes
+html_document:
+  toc: yes
+toc_float: yes
+---
+
+# Setup
+First let us set up the R environment:
+
+## Global options
+
+```{r global options, include = TRUE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      error = FALSE,
+                      eval = TRUE,
+                      dev = c('pdf', 'png'),
+                      width = 60,
+                      fig.align = 'center',
+                      fig.height = 10,
+                      fig.width = 10,
+                      fig.dpi = 300,
+                      fig.pos = "!H",
+                      dpi = 300,
+                      out.extra = "",
+                      message = FALSE,
+                      cache = FALSE,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figs/rmd/')
+```
+
+## Library
+
+```{r setup}
+# Load the libraries
+library(xlsx)
+library(tidyverse)
+library(jmv)
+library(scales)
+```
+
+## Parameters
+
+```{r directory}
+data_dir     = "..."
+analysis_dir = "..."
+pw_message   = "..."
+font         = element_text(family = "serif")
+custom_col6  = c("1" = "#771155",
+                 "2" = "#CC99BB",
+                 "3" = "#114477",
+                 "4" = "#DDDD77",
+                 "5" = "#77CCCC",
+                 "6" = "#117744") 
+
+```
+
+## Load Data
+
+```{r load_data}
+## load data here...
+```
+
+# Analysis
+
+## Descriptives
+
+```{r descriptives_cr}
+jmv::descriptives(
+  vars = c(cr_0, cr_1, cr_2, cr_3),
+  data = data,
+  iqr = TRUE,
+  sw = TRUE
+)
+```
+
+```{r descriptives}
+jmv::descriptives(
+    vars = c(alt_0, alt_1, alt_2, alt_3),
+    data = data,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+## Figure
+
+### Theme
+
+```{r figure_theme}
+#create custom theme
+theme_ag <- function(){
+
+  theme_classic() %+replace%
+    
+    theme(
+      text = font,
+      axis.text = element_text(size = 12),
+      axis.title.y = element_blank(),
+      axis.title.x = element_text(size = 16),
+      strip.text.x = element_text(size = 20, margin = margin(t = 5, b = 5)),  
+      legend.title = element_text(size = 14)
+    )
+}
+```
+
+### Data
+
+```{r severe_EHI_biochem_data}
+## pivot longer
+data_long <- data %>%
+  tidyr::pivot_longer(
+    ## Exclude UIN from the pivoting
+    cols = -UIN,
+    ## Split the column names into biomarker type and day
+    names_to = c("biomarker", "day"),
+    ## Specify the separator in the column names
+    names_sep = "_",
+    ## Name of column for biomarkers values
+    values_to = "value" 
+  ) %>%
+  dplyr:: mutate(
+    ## set day to numeric
+    Day = as.numeric(day),
+    ## set biomarker to factor: cr, alt
+    biomarker = factor(biomarker, levels = c("cr", "alt"))
+  )
+
+## Create a seperate ID column based off UIN column 
+## Create a mapping from UIN to numeric IDs
+uin_to_id <- setNames(1:6, unique(data_long$UIN))
+
+## Add the new ID column based on the UIN mapping
+data_long <- data_long %>%
+  mutate(ID = uin_to_id[UIN])
+
+## Convert ID to factor
+data_long$ID <- as.factor(data_long$ID)
+
+## normal values
+annotation_data <- data.frame(
+  biomarker = c("cr", "alt"),
+  day = Inf,  
+  value = c(86.63, 17.6),  
+  label = "Normal level"
+)
+
+## severe EHI threshold values
+new_rows <- data.frame(
+  biomarker = c("cr", "alt"),
+  day = Inf,
+  value = c(115, 89.5), 
+  label = "Severe threshold"
+)
+
+## Combine together
+annotation_data <- rbind(annotation_data, new_rows)
+
+## Set biomarker as factor aswell!
+annotation_data$biomarker <- factor(annotation_data$biomarker, levels = c("cr", "alt"))
+```
+
+### Plot
+
+```{r severe_EHI_biochem_figure, fig.width=10, fig.height=5}
+f <-
+  ggplot(data_long, aes(
+    x = Day,
+    y = value,
+    group = ID,
+    color = ID
+  )) +
+  geom_line(alpha = 0.8) +
+  geom_point(alpha = 0.6) +
+  ## Cr severe threshold line
+  geom_hline(
+    data = data.frame(biomarker = "cr"),
+    aes(yintercept = 115),
+    linetype = "dashed",
+    color = "black"
+  ) +
+    ## ALT severe threshold line
+  geom_hline(
+    data = data.frame(biomarker = "alt"),
+    aes(yintercept = 89.5),
+    linetype = "dashed",
+    color = "black"
+  ) +
+  ## Cr normal level line
+  geom_hline(
+    data = data.frame(biomarker = "cr"),
+    aes(yintercept = 86.63),
+    linetype = "dotted",
+    color = "black"
+  ) +
+  ## ALT normal level line
+  geom_hline(
+    data = data.frame(biomarker = "alt"),
+    aes(yintercept = 17.6),
+    linetype = "dotted",
+    color = "black"
+  ) +
+  ## annotate figure
+  geom_text(
+    data = annotation_data,
+    family = "serif",
+    aes(
+      x = Inf,
+      y = value,
+      label = label,
+      group = NULL,
+      color = NULL
+    ),
+    hjust = 1.1,
+    vjust = 1.2,
+    inherit.aes = FALSE,
+    show.legend = FALSE
+  ) +
+  labs(x = "Day") +
+  facet_wrap(~ biomarker,
+             scales = "free_y",
+             labeller = labeller(biomarker = c(cr = "Cr (μmol/L)",
+                                               alt = "ALT (U/L)"))) +
+  expand_limits(y = 0) +
+  scale_color_manual(values = custom_col6) +
+  theme_ag() 
+
+f
+
+ggsave(filename = paste0(analysis_dir, "figs/ggsave_Severe_EHI_biochem_figure", ".png"),
+             plot = f,
+             height = 5, width = 10, unit = "in", dpi = 600)
+
+ggsave(filename = paste0(analysis_dir, "figs/ggsave_Severe_EHI_biochem_figure", ".jpeg"),
+             plot = f,
+             height = 5, width = 10, unit = "in", dpi = 600)
+```
+
+# Session info
+
+``` {r sessionInfo}
+sinfo <- sessionInfo()
+sinfo
+save.image(paste0(analysis_dir, "/prospective_analysis_manuscript_severe_biochem.Rout"))
+```
