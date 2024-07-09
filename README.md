@@ -16,4 +16,6 @@ Folder/file description:
 
 **characteristics**/*prospective_analysis_manuscript_characteristics_gh*: R markdown script used to analyse participant characteristics.  
 
+**control_matching**/*...*: R script used for control matching.  
+
 **severe_biochem**/*prospective_analysis_manuscript_severe_biochem_gh*: R markdown script used to analyse serum creatine and alanine transaminase of the severe exertional heat illness cases. 
