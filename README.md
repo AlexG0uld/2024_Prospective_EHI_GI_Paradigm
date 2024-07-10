@@ -1,4 +1,4 @@
-# 2024_prospective_EHI_GI_paradigm
+# 2024_Prospective_EHI_GI_paradigm
 
 This repository contains data analysis scripts for publication '...'  
 
