@@ -14,8 +14,8 @@ Folder/file description:
 
 **biomarkers_modsev**/*prospective_analysis_manuscript_biomarkers_modsev_gh.Rms*:  R markdown script used to analyse biomarkers for only the moderate and severe exertional heat illness cases vs. matched controls.
 
-**characteristics**/*prospective_analysis_manuscript_characteristics_gh*: R markdown script used to analyse participant characteristics.  
+**characteristics**/*prospective_analysis_manuscript_characteristics_gh.Rmd*: R markdown script used to analyse participant characteristics.  
 
-**control_matching**/*...*: R script used for control matching.  
+**control_matching**/*control_matching_gh.R*: R script used for control matching.  
 
-**severe_biochem**/*prospective_analysis_manuscript_severe_biochem_gh*: R markdown script used to analyse serum creatine and alanine transaminase of the severe exertional heat illness cases. 
+**severe_biochem**/*prospective_analysis_manuscript_severe_biochem_gh.Rmd*: R markdown script used to analyse serum creatine and alanine transaminase of the severe exertional heat illness cases. 
