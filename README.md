@@ -6,7 +6,7 @@ Folder/file description:
 
 **6msm_info**/*prospective_analysis_manuscript_6msm_info_gh.Rmd*: R markdown script used to analyse 6-mile speed march descriptives. 
 
-**16S_case_con**/*....Rmd*: R markdown script used to analyse 16S rRNA sequencing output for exertional heat illness cases vs. matched controls.  
+**16S_case_con**/*prospective_analysis_manuscript_16S_case_con_gh.Rmd*: R markdown script used to analyse 16S rRNA sequencing output for exertional heat illness cases vs. matched controls.  
 
 **16S_modsev**/*prospective_analysis_manuscript_16S_modsev_gh.Rmd*: R markdown script used to analyse 16S rRNA sequencing output for only the moderate and severe exertional heat illness cases vs. matched controls.
 
