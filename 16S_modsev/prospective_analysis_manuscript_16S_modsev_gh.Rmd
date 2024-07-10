@@ -1,0 +1,5349 @@
+---
+title: "16S rRNA Analysis - Moderate/Severe vs Control (manuscript)"
+author: "Alex Gould"
+date: "`r date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+    number_sections: no
+    latex_engine: xelatex
+  rmarkdown::pdf_document:
+    extra_dependencies: float
+    toc: yes
+html_document:
+  toc: yes
+toc_float: yes
+---
+
+This is sub-group analyses comparing only the moderate (n=18) and severe (n=6) cases (TOTAL n=24) against matched controls. 
+
+# Section 0: Setup
+
+## Global options
+
+```{r global options, include = TRUE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE,
+                      error = FALSE,
+                      eval = TRUE,
+                      dev = c('pdf', 'png'),
+                      width = 60,
+                      fig.align = 'center', 
+                      fig.height = 10, 
+                      fig.width = 10, 
+                      fig.dpi = 300,
+                      fig.pos = "!H",
+                      dpi = 300,
+                      out.extra = "",
+                      message = FALSE, 
+                      cache = FALSE,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figs/rmd/') 
+```
+
+## Parameters
+
+``` {r SET_parameters, eval = TRUE}
+analysis_dir     = "..."
+qiime_dir        = "..."
+data_dir         = "..."
+pw_message       = "...."
+experiment_type  = 'illumina'               
+load_type        = 'input'
+experiment_code  = '...'
+process_num      = '1'
+indir            = "..."
+min_otus         = 20000
+nclass           = 15 
+group_cols       = c('Control' = '#0099CC', 'EHI' = '#ea4714')
+custom_col16     = c(
+  "#771155",
+  "#AA4488",
+  "#CC99BB",
+  "#114477",
+  "#4477AA",
+  "#117777",
+  "#77CCCC",
+  "#117744",
+  "#88CCAA",
+  "#777711",
+  "#AAAA44",
+  "#DDDD77",
+  "#774411",
+  "#AA7744",
+  "#DDAA77",
+  "#771122"
+)
+test_type        = "non-parametric"
+control          = "Control"
+otu_or_asv       = "ASV"
+read_type        = "filter"
+rep_shapes       = rep(c(15, 16, 17, 18, 3, 7, 8, 9, 10, 11, 12, 13), 7)
+```
+
+## Environment setup
+First check that the input parameters are suitable:
+
+``` {r check_parameters}
+if (!file.exists(analysis_dir)) stop("Error: Output directory ", analysis_dir, " not found. Please ensure that the output directory exists before running.\n")
+if (!experiment_type %in% c("illumina", "nanopore")) stop ("Error: experiment_type must be one of 'illumina' or 'nanopore'.\n")
+if (!load_type %in% c("pipeline", "input")) stop ("Error: load_type must be one of 'pipeline' or 'input'.\n")
+if(load_type == "pipeline" && (is.na(experiment_code) || is.na(process_num))) stop("Error: Parameters 'experiment_code' and 'process_num' are required if load_type 'pipeline' used.\n")
+if(load_type == "input" && (is.na(indir))) stop("Error: Parameters 'experiment_code' and 'process_num' are required if load_type 'pipeline' used.\n")
+if(load_type == "input" && (!file.exists(indir))) stop("Error: Input directory ", indir, " not found. Please ensure that the input directory containing the required input files is correct before running.\n")
+if (nclass < 5 || nclass > 20) stop("Error: nclass must be between 5 and 20.\n")
+if (min_otus < 5000) stop("Error: min_otus must be greater than 5000.\n")
+if (!test_type %in% c("parametric", "non-parametric")) stop ("Error: test_type must be one of 'parametric' or 'non-parametric'.\n")
+if (!read_type %in% c("raw", "trim", "filter")) stop ("Error: read_type must be one of 'raw', 'trim' or 'filter'.\n")
+###!!!! Check group_cols and control
+if(!file.exists(paste0(analysis_dir, "/tabs"))) dir.create(paste0(analysis_dir, "/tabs"))
+```
+
+Then set up the R environment:
+
+```{r setup}
+## Load the libraries
+library("DBI")
+library("RMySQL")
+library("phyloseq")
+library("tidyverse")
+library("xlsx")
+library("rstudioapi")
+library("qiime2R")
+library("jmv")
+library("ggpubr")
+library("ggtext")
+library("vegan")
+library("plyr")
+library("reshape2")
+library("DESeq2")
+library("broom") ## AG added
+library("scales") ## AG added
+library("corrplot") ## AG added
+library("ggrepel")
+library("ggvenn")
+library("rlang")
+library("ALDEx2")
+library("ANCOMBC")
+library("openxlsx")
+
+## Set seed for reproducibility
+set.seed(0)
+
+## Set font for figures
+font = element_text(family = "serif")
+```
+
+## stat_compare_means() fix
+
+Fix for `stat_compare_means()` function to allow Times New Roman font. Thank you https://stackoverflow.com/questions/77346644/stat-compare-means-unable-to-change-font-family-when-using-comparisons-argu 
+
+```{r stat_compare_means_fix}
+fixed_call <- quote(ggsignif::geom_signif(comparisons = comparisons, 
+                                          y_position = label.y, 
+                                          test = method, test.args = method.args, 
+                                          step_increase = step.increase, 
+                                          size = bracket.size, textsize = 6, color = color, 
+                                          map_signif_level = map_signif_level, 
+                                          tip_length = tip.length, data = data,
+                                          vjust = vjust, ...))
+
+scm <- as.list(ggpubr::stat_compare_means)
+scm[[26]][[2]][[3]][[13]] <- fixed_call
+stat_compare_means <- function(...) {
+  ggp <- getNamespace('ggpubr')
+  .method_info <- ggp$.method_info
+  .add_item <- ggp$.add_item
+  .is_p.signif_in_mapping <- ggp$.is_p.signif_in_mapping
+  .is_empty <- ggp$.is_empty
+  do.call(as.function(scm), list(...), quote = FALSE)
+}
+```
+
+## Load data
+
+### Sample annotation
+
+``` {r load_sample_ann}
+## load sample annotation here... 
+```
+
+### Set sample annotation
+
+``` {r SET_sample_ann}
+## set sample annotation here...
+```
+
+### Phyloseq
+
+``` {r load_phyloseq_data}
+## load phyloseq here... 
+```
+
+# Section 1: Quality Control - all data
+
+## Rarefaction curve
+
+``` {r Section1_QC_alldata_rarefaction_curve, cache = TRUE}
+## Calculate a rarefaction curve (code taken from https://github.com/joey711/phyloseq/issues/143)
+calculate_rarefaction_curves <- function(psdata, measures, depths) {
+
+  estimate_rarified_richness <- function(psdata, measures, depth) {
+    if(max(sample_sums(psdata)) < depth) return()
+    psdata <- prune_samples(sample_sums(psdata) >= depth, psdata)
+
+    rarified_psdata <- rarefy_even_depth(psdata, depth, verbose = FALSE)
+
+    alpha_diversity <- estimate_richness(rarified_psdata, measures = measures)
+
+    ## as.matrix forces the use of melt.array, which includes the Sample names (rownames)
+    molten_alpha_diversity <- melt(as.matrix(alpha_diversity), varnames = c('Sample', 'Measure'), value.name = 'Alpha_diversity')
+
+    molten_alpha_diversity
+  }
+
+  names(depths) <- depths ## this enables automatic addition of the Depth to the output by ldply
+  rarefaction_curve_data <- ldply(depths, estimate_rarified_richness, psdata = psdata, measures = measures, .id = 'Depth', .progress = ifelse(interactive(), 'text', 'none'))
+
+  ## convert Depth from factor to numeric
+  rarefaction_curve_data$Depth <- as.numeric(levels(rarefaction_curve_data$Depth))[rarefaction_curve_data$Depth]
+
+  rarefaction_curve_data
+}
+
+## Calculate the rarefaction curve
+set.seed(42)
+rarefaction_curve_data <- calculate_rarefaction_curves(phyloseq_dat,
+                                                       c('Observed', "Chao1", 'Shannon', "Simpson"),
+                                                       rep(c(1, 10, 100, 1000, 1:100 * 1000), each = 10))
+
+## Summarize the alpha diversity
+rarefaction_curve_data_summary <- ddply(rarefaction_curve_data, c('Depth', 'Sample', 'Measure'),
+                                        summarise,
+                                        Alpha_diversity_mean = mean(Alpha_diversity, na.rm = TRUE),
+                                        Alpha_diversity_sd = sd(Alpha_diversity, na.rm = TRUE))
+rarefaction_curve_data_summary [["Sample"]] <- gsub("\\.", " ", rarefaction_curve_data_summary [["Sample"]])
+rarefaction_curve_data_summary_verbose <- merge(rarefaction_curve_data_summary, data.frame(sample_data(phyloseq_dat)), by.x = 'Sample', by.y = 'row.names')
+rarefaction_curve_data_summary_verbose[["Depth"]] <- rarefaction_curve_data_summary_verbose[["Depth"]]/1000
+```
+
+### Plot 
+
+``` {r Section1_QC_alldata_rarefaction_curve_plot, cache = TRUE, fig.height = 10, fig.width = 15}
+## Plot the rarefaction curve
+rarefaction_curve <-
+ggplot(data = subset(rarefaction_curve_data_summary_verbose, Measure %in% c('Observed', "Chao1", 'Shannon', "Simpson")),
+              mapping = aes(
+                x = Depth,
+                y = Alpha_diversity_mean,
+                ymin = Alpha_diversity_mean - Alpha_diversity_sd,
+                ymax = Alpha_diversity_mean + Alpha_diversity_sd,
+                colour = Group,
+                #shape  = Rep,
+                #group  = Rep,
+                alpha = 0.8)) +
+  geom_line() +
+  geom_pointrange(size = 1) +
+  xlab("Read Depth (1,000s)") +
+  ylab("Alpha Diversity") +
+  scale_fill_manual(values = group_cols) +
+  scale_color_manual(values = group_cols) +
+  scale_shape_manual(values = rep_shapes) +
+  facet_grid(Measure ~ ., scales="free_y") +
+  theme_bw() +
+  theme(
+    text = font,
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 18),
+    legend.text = element_text(size = 18),
+    legend.title = element_text(size=18),
+    strip.text.x = element_text(size=24, face = "bold"),
+    strip.text.y = element_text(size=24, face = "bold"))
+
+rarefaction_curve
+
+## reset sed to 0
+set.seed(0)
+```
+
+## Taxa count per sample - All data
+
+The following plot shows the total number of observed taxa (OTUs or ASVs) per sample, with the minimum number of taxa specified above (min_otus) highlighted with a dashed line. Samples lower than this will be removed below in Section 2. 
+
+``` {r Section1_QC_alldata_OTU_count, fig.height = 12, fig.width = 10}
+data.frame(sample_data(phyloseq_dat)) %>%
+  dplyr::mutate(count = sample_sums(phyloseq_dat)) %>%
+  ggplot(aes(x = UIN, y = count/1000, fill = Group)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  xlab("") + ylab(paste0("Total Number ", otu_or_asv, "s (x1000)")) +
+  facet_wrap(.~Group, scales = "free_x") +
+  geom_hline(yintercept = min_otus/1000, linetype = 2, linewidth = 1.2) +
+  scale_fill_manual(values = group_cols) +
+  scale_color_manual(values = group_cols) +
+  scale_shape_manual(values = rep_shapes) +
+  theme_bw() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 18),
+    axis.text.y  = element_text(size = 12),
+    axis.text.x  = element_text(size = 14, angle = 315, face = "bold", hjust = 0),
+    legend.text  = element_text(size = 14),
+    legend.title = element_text(size = 20, face = "bold"),
+    strip.text.x = element_text(size=20, face = "bold"),
+    strip.text.y = element_text(size=16, face = "bold")
+  )
+```
+
+# Section 2: Quality Control - Rarefied and filtered data
+
+## Sample filtering and rarefaction
+
+In this section, the data will be filtered to remove all samples with fewer than `r min_otus` OTUs in the data set. The remaining data will be rarefied to reduce all samples to the same depth, which will be the lowest depth from the remaining samples following filtering.
+
+``` {r Section2_QC_filterdata_filter_and_rarefy_samples}
+## Check sample sums
+sample_sums_values <- sample_sums(phyloseq_dat)
+
+## Find samples with sums below 20,000
+samples_below_min_otus <- names(sample_sums_values[sample_sums_values <= min_otus])
+
+## Print
+print(samples_below_min_otus)
+
+## Now identify the associated pair to also remove
+filter_pairs_to_remove <- sample_data(phyloseq_dat)$Pair[sample_data(phyloseq_dat)$sample_code %in% samples_below_min_otus]
+
+## Print
+print(filter_pairs_to_remove)
+
+## Filter to remove samples with fewer than min_otus
+phyloseq_dat_filter <- prune_samples(!(sample_data(phyloseq_dat)$Pair %in% filter_pairs_to_remove), phyloseq_dat)
+
+## Create a non rarefied phyloseq object with filtered samples for DESeq2 analysis
+phyloseq_dat_deseq <- prune_samples(!(sample_data(phyloseq_dat)$Pair %in% filter_pairs_to_remove), phyloseq_dat)
+
+## Rarefy the data to the minimum otu depth
+rarefy_otu_depth <- min(sample_sums(phyloseq_dat_filter))
+cat("Rarefication of data to", rarefy_otu_depth, "OTUs:\n")
+phyloseq_dat_filter <- rarefy_even_depth(phyloseq_dat_filter, rarefy_otu_depth, verbose = FALSE)
+```
+
+### Summary N for Analysis
+
+Below, a summary of the n taken forward for analysis is provided: 
+
+``` {r Section2_n_summary}
+## N by group
+sample_ann_summary %>%
+  dplyr::select(UIN, sample_code, Pair, Classification, Group, NSAID) %>%  
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  ## Remove pairs which have ASV count lower than min_otus (< 20,000)
+  dplyr::filter(!Pair %in% filter_pairs_to_remove) %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(n = n())
+
+## Total N removed by having ASV count lower than min_outs (< 20,000)
+length(filter_pairs_to_remove)
+
+## By classification 
+sample_ann_summary %>%
+  dplyr::select(UIN, sample_code, Pair, Classification, Group, NSAID) %>%
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  ## Remove pairs which have ASV count lower than min_otus (< 20,000)
+  dplyr::filter(!Pair %in% filter_pairs_to_remove) %>%
+  dplyr::group_by(Classification) %>%
+  dplyr::summarise(n = n())
+```
+
+## Taxa count per sample - Rarefied and filtered data
+
+The following plot shows the total number of observed taxa (OTUs or ASVs) per sample after rarefaction and filtering of samples to remove low coverage samples, with the minimum number of taxa specified above (min_otus) highlighted with a dashed line. Samples lower than this will be removed below in Section 2. All samples should have the same depth. If this is not the case, then please debug the code.
+
+``` {r Section2_QC_filterdata_OTU_count, fig.height = 12, fig.width = 10}
+data.frame(sample_data(phyloseq_dat_filter)) %>%
+  dplyr::mutate(count = sample_sums(phyloseq_dat_filter)) %>%
+  ggplot(aes(x = UIN, y = count/1000, fill = Group)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  xlab("") + ylab(paste0("Total Number ", otu_or_asv, "s (x1000)")) +
+  facet_wrap(.~Group, scales = "free_x") +
+  geom_hline(yintercept = min_otus/1000, linetype = 2, linewidth = 1.2) +
+  scale_fill_manual(values = group_cols) +
+  scale_color_manual(values = group_cols) +
+  scale_shape_manual(values = rep_shapes) +
+  theme_bw() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 18),
+    axis.text.y  = element_text(size = 12),
+    axis.text.x  = element_text(size = 14, angle = 315, face = "bold", hjust = 0),
+    legend.text  = element_text(size = 14),
+    legend.title = element_text(size = 20, face = "bold"),
+    strip.text.x = element_text(size=20, face = "bold"),
+    strip.text.y = element_text(size=16, face = "bold")
+  )
+```
+
+
+## Alpha diversity - Rarefied and filtered data
+
+The following will create a .csv file containing the observed, Chao1 and Shannon Alpha diversity metrics for each sample. Below is the median across each Group level.
+
+```{r Section2_QC_filterdata_alpha_diversity_summary}
+## Create alpha diversity data frame
+adiv <- data.frame(
+  "Pair" = phyloseq::sample_data(phyloseq_dat_filter)$Pair,
+  "UIN" = phyloseq::sample_data(phyloseq_dat_filter)$UIN,
+  "Group" = phyloseq::sample_data(phyloseq_dat_filter)$Group,
+  "Troop" = phyloseq::sample_data(phyloseq_dat_filter)$Troop,
+  "Observed" = phyloseq::estimate_richness(phyloseq_dat_filter, measures = "Observed"),
+  "Chao1" = phyloseq::estimate_richness(phyloseq_dat_filter, measures = "Chao1"),
+  "Shannon" = phyloseq::estimate_richness(phyloseq_dat_filter, measures = "Shannon"),
+  "Simpson" = phyloseq::estimate_richness(phyloseq_dat_filter, measures = "Simpson"))
+
+adiv <- adiv %>%
+  ## Remove Chao1 SE column
+  dplyr::select(-Chao1.se.chao1) %>%
+  ## Rename Chao1 column
+  dplyr::rename(Chao1 = Chao1.Chao1) %>%
+  dplyr::arrange(Pair, Group) %>%
+  tibble::remove_rownames()
+
+head(adiv)
+
+## write as csv
+write.table(
+  adiv,
+  paste0(analysis_dir, "/tabs/alpha_diversity_table.csv"),
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE,
+  sep = ","
+)
+``` 
+
+### Normality
+
+```{r Section2_QC_filterdata_alpha_diversity_normality}
+jmv::descriptives(
+    formula = Observed + Chao1 + Shannon + Simpson ~ Group,
+    data = adiv,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### t-test
+
+```{r Section2_QC_filterdata_alpha_diversity_comparison_stat}
+jmv::ttestIS(
+    formula = Observed + Chao1 ~ Group,
+    data = adiv,
+    vars = vars(Observed, Chao1),
+    effectSize = TRUE,
+    eqv = TRUE)
+```
+
+non-parametric data:
+
+```{r Section2_QC_filterdata_alpha_diversity_comparison_stat_non_parametric, echo = TRUE}
+jmv::ttestIS(
+    formula = Simpson + Shannon ~ Group,
+    data = adiv,
+    vars = vars(Simpson, Shannon),
+    students = FALSE,
+    mann = TRUE,
+    effectSize = TRUE)
+```
+
+### Plot
+
+The following plot shows a boxplot comparing the alpha diversity between the Group levels (p-values are based in a `r ifelse(test_type == "parametric", "t.test", "wilcox.test")` compared to the '`r control`' level, with ns: p > 0.05; \*: p <= 0.05; \*\*: p <= 0.01; \*\*\*: p <= 0.001; \*\*\*\*: p <= 0.0001). 
+
+```{r Section2_QC_filterdata_alpha_diversity_comparison_plot, fig.height = 8, fig.width = 12}
+## TRUE is normal, FALSE is non-normal distribution 
+metrics_normality <-
+  c(
+    "Observed" = TRUE,
+    "Chao1" = TRUE,
+    "Shannon" = FALSE,
+    "Simpson" = FALSE
+  )
+
+## Add normality information and tidy data frame
+adiv_long <- adiv %>%
+  tidyr::gather(key = "metric",
+                value = "value",
+                c("Observed", "Chao1", "Shannon", "Simpson")) %>%
+  dplyr::mutate(metric = factor(metric, levels = c("Observed", "Chao1", "Shannon", "Simpson")),
+                Normal = metrics_normality[as.character(metric)])
+
+## Function for Normal data: mean SD
+mean_sd <- function(x) {
+  mean_data <- mean(x)
+  sd_data <- sd(x)
+  ymin <- mean_data - sd_data
+  ymax <- mean_data + sd_data
+  return(data.frame(y = mean_data, ymin = ymin, ymax = ymax))
+}
+
+## Function for Non-Normal data: median IQR
+median_iqr <- function(x) {
+  med_data <- median(x)
+  iqr_data <- IQR(x)
+  lower <- med_data - iqr_data / 2
+  upper <- med_data + iqr_data / 2
+  return(data.frame(y = med_data, ymin = lower, ymax = upper))
+}
+
+## Plot
+adiv_group_plot <- adiv_long %>%
+  ggplot(aes(x = Group, y = value)) +
+  geom_jitter(aes(color = Group), 
+              size = 2, 
+              alpha = 0.6,
+              width = 0.25) +
+  facet_wrap(~ metric, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")), 
+                     method = "wilcox.test", 
+                     label = "p.signif", 
+                     paired = FALSE, 
+                     family = "serif", 
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  scale_fill_manual(values = group_cols) +
+  scale_color_manual(values = group_cols) +
+  scale_x_discrete(labels = c("Control", "Mod/Sev\nEHI")) +
+  labs(
+    x = "",
+    y = "Alpha Diversity"
+  ) +
+  theme_classic() +
+  theme(text = font,
+        axis.title = element_text(size = 24),
+        axis.text.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        strip.text = element_text(size=26, face = "bold"),
+        legend.position = "none") +
+  expand_limits(y=0) +
+  stat_summary(data = filter(adiv_long, Normal), 
+               fun = mean, 
+               geom = "point", 
+               color = "black", 
+               size = 3, 
+               show.legend = FALSE) +
+  stat_summary(data = filter(adiv_long, Normal), 
+               fun.data = mean_sd, 
+               geom = "errorbar", 
+               color = "black", 
+               width = 0.3, 
+               linewidth = 0.8, 
+               show.legend = FALSE) +
+  stat_summary(data = filter(adiv_long, !Normal), 
+               fun = median,
+               geom = "crossbar", 
+               color = "black", 
+               width = 0.6, 
+               linewidth = 0.4, 
+               show.legend = FALSE) +
+  stat_summary(data = filter(adiv_long, !Normal), 
+               fun.data = median_iqr, 
+               geom = "errorbar", 
+               color = "black", 
+               width = 0.3, 
+               linewidth = 0.6, 
+               show.legend = FALSE)
+
+adiv_group_plot
+``` 
+
+## Beta diversity - Rarefied and filtered data
+
+The following principal coordinate analysis (PCoA) plot shows the beta diversity following rarefaction and filtering of samples, based on the Bray Curtis distance between samples. 
+
+``` {r Section2_QC_filterdata_beta_diversity, fig.height = 7, fig.width = 9.5}
+## beta diversity - PCoA
+bdiv_group_plot <- plot_ordination(phyloseq_dat_filter, 
+                                   ordinate(phyloseq_dat_filter, method = "PCoA", distance = "bray", na.rm = TRUE), 
+                                   type = "samples", 
+                                   color = "Group", 
+                                   #shape = "Rep"
+                                   ) + 
+  stat_ellipse(aes(group = Group), 
+               linetype = 2,
+               linewidth = 1) +
+  geom_point(size = 5,
+             alpha = 0.8) +
+  ggtitle("") + 
+  # scale_fill_manual(values = group_cols) +
+  # scale_color_manual(values = group_cols) +
+  scale_fill_manual(values = group_cols, labels = c("Control" = "Control", "EHI" = "Mod/Sev\nEHI")) +
+  scale_color_manual(values = group_cols, labels = c("Control" = "Control", "EHI" = "Mod/Sev\nEHI")) +
+  #scale_shape_manual(values = rep_shapes) +
+  theme_classic() +
+  theme(
+    text = font,
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 16),
+    legend.text = element_text(size = 18),
+    legend.title = element_text(size=22))
+
+## view
+bdiv_group_plot
+```
+
+## PERMANOVA
+
+This section will use permutational MANOVA (PERMANOVA) to look for significant effects of the Group variable on the abundance. Dissimilarity is again based on the Bray Curtis difference. 
+
+``` {r Section2_PERMANOVA_analysis}
+## Set seed for reproducibility 
+set.seed(0)
+
+## Convert the counts across all samples into a community data matrix
+plot_dat <- psmelt(phyloseq_dat_filter)
+community_mat <- plot_dat %>%
+  dplyr::select(Sample, OTU, Abundance) %>%
+  spread(OTU, Abundance)
+row.names(community_mat) <- community_mat[["Sample"]]
+community_mat <- as.matrix(community_mat[, -1]) ## Remove the Sample column
+
+## Transform the data using square root to minimize influence of most abundant groups
+community_mat <- sqrt(community_mat)
+
+## Create a dissimilarity matrix
+OTU_dist <- vegdist(community_mat, method = "bray")
+
+## Get the matching sample data
+ind_dat <- plot_dat %>%
+  dplyr::select(Sample, Group) %>%
+  distinct()
+ind_dat <- ind_dat[match(rownames(community_mat), ind_dat[["Sample"]]), ]
+
+## Run perMANOVA
+perm <- adonis2(OTU_dist ~ Group, data = ind_dat, permutations = 9999, method = "bray")
+perm
+```
+
+# Section 3: Microbial Abundance
+
+## Normalise
+
+Here we summarise the unique taxa at each taxonomic level on the rarefied data.     
+A second summary table is presented for the unique taxa at each taxonomic level on the non-rarefied, count data.
+
+``` {r Section3_normalise}
+phyloseq_dat_filter_norm <- transform_sample_counts(phyloseq_dat_filter, function (x) 100* ((x+1) / sum(x+1)))
+phyloseq_dat_filter_norm_melt <- psmelt(phyloseq_dat_filter_norm)
+
+## melted object of rarefied data
+phyloseq_dat_filter_melt <- psmelt(phyloseq_dat_filter)
+
+## melted object on non-rarefied data
+phyloseq_dat_norm_melt <- psmelt(phyloseq_dat_deseq) 
+```
+
+## Summerise 
+
+``` {r Section3_summarise_taxa}
+## rarefied data: print the number and each unique taxas. Each number total will contain one NA. 
+length(unique(phyloseq_dat_filter_melt$Phylum))
+unique(phyloseq_dat_filter_melt$Phylum)
+length(unique(phyloseq_dat_filter_melt$Class))
+unique(phyloseq_dat_filter_melt$Class)
+length(unique(phyloseq_dat_filter_melt$Order))
+unique(phyloseq_dat_filter_melt$Order)
+length(unique(phyloseq_dat_filter_melt$Family))
+unique(phyloseq_dat_filter_melt$Family)
+length(unique(phyloseq_dat_filter_melt$Genus))
+unique(phyloseq_dat_filter_melt$Genus)
+```
+
+```{r Section3_summarise_taxa_new}
+## Function to calculate distinct counts of taxa for each UIN within Group
+summarise_taxa <- function(data) {
+  data %>%
+    ## Filter by a count >= 1
+    dplyr::filter(Abundance >= 1) %>%
+    ## Group by UIN and Group
+    dplyr::group_by(UIN, Group) %>%
+    # Summarise unique counts of taxa at each taxonomic level
+    dplyr::summarise(
+      Phylum = n_distinct(Phylum, na.rm = TRUE),
+      Class = n_distinct(Class, na.rm = TRUE),
+      Order = n_distinct(Order, na.rm = TRUE),
+      Family = n_distinct(Family, na.rm = TRUE),
+      Genus = n_distinct(Genus, na.rm = TRUE),
+      Species = n_distinct(Species, na.rm = TRUE),
+      ASV = n_distinct(OTU, na.rm = TRUE),
+      ## drop groupings
+      .groups = 'drop'
+    )
+}
+
+## Return results for unique taxa
+summary_taxa_result <- summarise_taxa(phyloseq_dat_filter_melt)
+
+## View the results
+head(summary_taxa_result)
+
+## descriptives with S-W test
+jmv::descriptives(
+    formula = . ~ Group,
+    data = summary_taxa_result,
+    iqr = TRUE,
+    sw = TRUE)
+
+round_half_up <- function(x) {
+  floor(x + 0.5)
+}
+
+## summarise average & variance of taxa for each taxa level, by group
+summary_by_group <- summary_taxa_result %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(
+    ## phyla: median (IQR)
+    median_phyla = median(Phylum, na.rm = FALSE),
+    iqr_phyla = IQR(Phylum, na.rm = FALSE),
+    ## classes: median (IQR)
+    median_classes = median(Class, na.rm = FALSE),
+    iqr_classes = IQR(Class, na.rm = FALSE),
+    ## orders: mean SD
+    mean_orders = mean(Order, na.rm = FALSE),
+    sd_orders = sd(Order, na.rm = FALSE),
+    ## families: mean SD
+    mean_families = mean(Family, na.rm = FALSE),
+    sd_families = sd(Family, na.rm = FALSE),
+    ## genera: mean SD
+    mean_genera = mean(Genus, na.rm = FALSE),
+    sd_genera = sd(Genus, na.rm = FALSE),
+    ## ASV: mean SD
+    mean_ASV = mean(ASV, na.rm = FALSE),
+    sd_ASV = sd(ASV, na.rm = FALSE)
+  ) %>%
+  ## round numbers to 0 decimal places
+  #dplyr::mutate_if(is.numeric, round, digits = 1)
+  #dplyr::mutate(across(where(is.numeric), ~round(.x, digits = 0)))
+  ## round numbers to 0 decimal places, rounding .5 up
+  dplyr::mutate(across(where(is.numeric), round_half_up))
+
+summary_by_group
+
+## Write this into a file
+write.table(
+  summary_by_group,
+  paste0(analysis_dir, "/tabs/taxa_summary_table_by_group.csv"),
+  row.names = FALSE,
+  col.names = TRUE,
+  sep = ",",
+  quote = FALSE
+)
+```
+
+## Barplot Function
+
+### Barplot function: Normal text
+
+The following function will plot a barplot showing the normalised abundance across all taxonomic levels with normal text for taxa. 
+
+``` {r Section3_plot_barplot_normal_text}
+## Function for non-italicised taxa names in the legend
+plot_barplot <-
+  function (taxa, plot_dat = phyloseq_dat_filter_norm_melt) {
+    # taxa = "Genus"
+    # plot_dat = phyloseq_dat_filter_norm_melt
+    
+    ## Get the total abundance across all samples for each OTU
+    tmp <- plot_dat %>%
+      dplyr::group_by(OTU) %>%
+      dplyr::summarise(sum = sum(Abundance))
+    tsums <- tmp[["sum"]]
+    names(tsums) <- tmp[["OTU"]]
+    tsums <- tsums[order(names(tsums))]
+    
+    ## Get the OTU taxa
+    tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+    taxlist <- tmp[, taxa]
+    names(taxlist) <- tmp[, "OTU"]
+    
+    ## Check the data match
+    if (length(tsums) != length(taxlist) ||
+        !all(names(tsums) %in% names(taxlist)) ||
+        !all(names(taxlist) %in% names(tsums))) {
+      stop("Error: tsums and taxlist do not match.\n")
+    }
+    taxlist <- taxlist[names(tsums)]
+    
+    ## Keep only the top taxa and add all other taxa into an "other" class
+    taxasum <-
+      sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+    taxasum <- taxasum[!names(taxasum) == ""]
+    plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+    plot_dat[is.na(plot_dat[["TaxName"]]) |
+               plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+    plot_dat[["TaxName"]] <-
+      ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+             as.character(plot_dat[[taxa]]),
+             "Other")
+    plot_dat[["TaxName"]] <-
+      factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+    
+    ## Combine counts at the taxa level
+    plot_dat <- plot_dat %>%
+      dplyr::group_by(Sample, Group, UIN, TaxName) %>%
+      dplyr::summarise(Abundance = sum(Abundance)) %>%
+      ## remove "[]", "-", "_" from taxa names
+      dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+      ## remove leading and trialing spaces!
+      dplyr::mutate(TaxName = trimws(TaxName)) %>%
+      ## remove instances of doubles spaces
+      dplyr::mutate(TaxName = gsub("  ", " ", TaxName))
+    
+    ## Extract unique and edited TaxName values
+    unique_taxa <- unique(plot_dat$TaxName)
+    
+    ## reset factor levels again
+    plot_dat <- plot_dat %>%
+      dplyr::mutate(TaxName = factor(TaxName, levels = unique_taxa))
+    
+    ## Write this into a file
+    write.table(
+      plot_dat,
+      paste0(
+        analysis_dir,
+        "/tabs/individual_abundance_table_",
+        taxa,
+        ".csv"
+      ),
+      row.names = FALSE,
+      col.names = TRUE,
+      sep = ",",
+      quote = FALSE
+    )
+    
+    ## Create a colour pallet for the barplot
+    set.seed(8)
+    cols <-
+      sample(custom_col16, length(unique(plot_dat[["TaxName"]])))
+    names(cols) <- unique(plot_dat[["TaxName"]])
+    cols["Other"] <- "#D3D3D3" ## set other as grey
+    
+    ## Create the plot with the custom legend formatting
+    p <- plot_dat %>%
+      ggplot(aes(x = UIN, y = Abundance, fill = TaxName)) +
+      geom_bar(stat = "identity", width = 1) +
+      labs(x = "",
+           y = "Relative Abundance") +
+      scale_y_continuous(labels = scales::label_percent(scale = 1),
+                         expand = expansion(add = c(0, 1))) +
+      scale_fill_manual(values = cols) +
+      facet_wrap(. ~ Group,
+                 scales = "free_x",
+                 labeller = labeller(Group = c(Control = "Control", EHI = "Mod/Sev EHI"))) +
+      theme_classic() +
+      theme(
+        text = font,
+        axis.title = element_text(size = 18),
+        axis.text.y = element_text(size = 16),
+        axis.text.x = element_blank(),
+        legend.text = element_markdown(size = 14),
+        ## Format legend text as markdown so names are italicised
+        legend.title = element_blank(),
+        strip.text.x = element_text(size = 16, face = "bold"),
+        strip.text.y = element_text(size = 16, face = "bold")
+      )
+    
+    p
+    
+    ## Return the figure and the data set
+    return(list(p, plot_dat))
+}
+```
+
+### Barplot function: Italicised Text
+
+The following function will plot a barplot showing the normalised abundance across all taxonomic levels with italicised text for taxa. 
+
+```{r Section3_plot_barplot_italised_text}
+## Function for italicised taxa names in the legend
+plot_barplot2 <- function (taxa,
+                           plot_dat = phyloseq_dat_filter_norm_melt,
+                           specific_name = NULL) {
+  # taxa = "Genus"
+  # plot_dat = phyloseq_dat_filter_norm_melt
+  
+  ## Construct the csv filename based on whether a specific name is provided
+  if (is.null(specific_name)) {
+    filename <- paste0("individual_abundance_table_", taxa, ".csv")
+  } else {
+    filename <-
+      paste0("individual_abundance_table_",
+             specific_name,
+             "_",
+             taxa,
+             ".csv")
+  }
+  
+  ## Include the analysis directory in the file path
+  filepath <-
+    file.path(analysis_dir, "tabs", filename) # Adjust the path as needed
+  
+  ## Get the total abundance across all samples for each OTU
+  tmp <- plot_dat %>%
+    dplyr::group_by(OTU) %>%
+    dplyr::summarise(sum = sum(Abundance))
+  tsums <- tmp[["sum"]]
+  names(tsums) <- tmp[["OTU"]]
+  tsums <- tsums[order(names(tsums))]
+  
+  ## Get the OTU taxa
+  tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+  taxlist <- tmp[, taxa]
+  names(taxlist) <- tmp[, "OTU"]
+  
+  ## Check the data match
+  if (length(tsums) != length(taxlist) ||
+      !all(names(tsums) %in% names(taxlist)) ||
+      !all(names(taxlist) %in% names(tsums))) {
+    stop("Error: tsums and taxlist do not match.\n")
+  }
+  taxlist <- taxlist[names(tsums)]
+  
+  ## Keep only the top taxa and add all other taxa into an "other" class
+  taxasum <-
+    sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+  taxasum <- taxasum[!names(taxasum) == ""]
+  plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+  plot_dat[is.na(plot_dat[["TaxName"]]) |
+             plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+  plot_dat[["TaxName"]] <-
+    ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+           as.character(plot_dat[[taxa]]),
+           "Other")
+  plot_dat[["TaxName"]] <-
+    factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+  
+  ## Combine counts at the taxa level
+  plot_dat <- plot_dat %>%
+    dplyr::group_by(Sample, Group, UIN, TaxName) %>%
+    dplyr::summarise(Abundance = sum(Abundance)) %>%
+    dplyr::mutate(## remove "[]", "-", "_" from taxa names
+      TaxName = gsub("\\[|\\]|-|_", " ", TaxName),
+      ## remove leading and trialing spaces!
+      TaxName = trimws(TaxName)) %>%
+    ## remove instances of doubles spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    ## Italicising taxa names
+    dplyr::mutate(FormattedTaxName = ifelse(
+      ## keep uncultured as normal text
+      grepl("^uncultured", TaxName),
+      gsub("^(uncultured) (.+)$", "\\1 *\\2*", TaxName),
+      ## Keep the stated names (e.g. "Other") as normal text (i.e. not italicised) and wrap taxa names with "*"
+      ifelse(
+        TaxName %in% c(
+          "Other",
+          "metagenome",
+          "gut metagenome",
+          "human gut",
+          "unidentified"
+        ),
+        TaxName,
+        paste("*", TaxName, "*", sep = "")
+      )
+    )) %>%
+    ## insert line break in long taxa names
+    dplyr::mutate(
+      FormattedTaxName = ifelse(
+        FormattedTaxName == "*Eubacterium hallii group*",
+        "*Eubacterium<br>hallii group*",
+        FormattedTaxName
+      )
+    )
+
+  ## Extract unique and edited TaxName values
+  unique_taxa <- unique(plot_dat$TaxName)
+  unique_taxa2 <- unique(plot_dat$FormattedTaxName)
+  
+  ## reset factor levels again
+  plot_dat <- plot_dat %>%
+    dplyr::mutate(
+      TaxName = factor(TaxName, levels = unique_taxa),
+      FormattedTaxName = factor(FormattedTaxName, levels = unique_taxa2)
+    )
+  
+  ## Write this into a file
+  write.table(
+    plot_dat,
+    file = filepath,
+    row.names = FALSE,
+    col.names = TRUE,
+    sep = ",",
+    quote = FALSE
+  )
+  
+  ## Create a colour pallet for the barplot
+  set.seed(8)
+  cols <-
+    sample(custom_col16, length(unique(plot_dat[["FormattedTaxName"]])))
+  names(cols) <- unique(plot_dat[["FormattedTaxName"]])
+  cols["Other"] <- "#D3D3D3" ## set other as grey
+  
+  ## Create the plot with the custom legend formatting
+  p <- plot_dat %>%
+    ggplot(aes(x = UIN, y = Abundance, fill = FormattedTaxName)) +
+    geom_bar(stat = "identity", width = 1) +
+    labs(x = "",
+         y = "Relative Abundance") +
+    scale_y_continuous(labels = scales::label_percent(scale = 1),
+                       expand = expansion(add = c(0, 1))) +
+    scale_fill_manual(values = cols) +
+    facet_wrap(. ~ Group,
+               scales = "free_x",
+               labeller = labeller(Group = c(Control = "Control", EHI = "Mod/Sev EHI"))) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title = element_text(size = 18),
+      axis.text.y = element_text(size = 16),
+      axis.text.x = element_blank(),
+      legend.text = element_markdown(size = 14),
+      ## Format legend text as markdown so names are italicised
+      legend.title = element_blank(),
+      strip.text.x = element_text(size = 16, face = "bold"),
+      strip.text.y = element_text(size = 16, face = "bold")
+    )
+  
+  p
+  
+  ## Return the figure and the data set
+  return(list(p, plot_dat))
+}
+```
+
+### Phylum
+``` {r Section3_barplot_top_phylum_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+phylum_dat <- plot_barplot("Phylum")
+phylum_p <- phylum_dat[[1]]
+phylum_p
+```
+
+### Class
+``` {r Section3_barplot_top_class_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+class_dat <- plot_barplot("Class")
+class_dat[[1]]
+```
+
+### Order
+``` {r Section3_barplot_top_order_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+order_dat <- plot_barplot("Order")
+order_dat[[1]]
+```
+
+### Family
+``` {r Section3_barplot_top_family_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+family_dat <- plot_barplot2("Family")
+family_dat[[1]]
+```
+
+### Genus
+``` {r Section3_barplot_top_genus_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+genus_dat <- plot_barplot2("Genus")
+genus_p <- genus_dat[[1]]
+genus_p
+```
+
+## Firmicute/Bacteroidota ratio
+
+This section will calculate the Firmicutes/Bacteroidota (FB) ratio, which is often used as a measure of gut microbiome dysregulation. 
+
+```{r Section3_calculate_FBratio, echo = TRUE}
+fbratio <- phylum_dat[[2]] %>%
+  dplyr::group_by(UIN) %>%
+  tidyr::spread(TaxName, Abundance) %>%
+  dplyr::mutate(FBratio = Firmicutes/Bacteroidota) %>%
+  dplyr::select(UIN, Group, Firmicutes, Bacteroidota, FBratio)
+
+head(fbratio)
+
+## Write as csv
+write.table(
+  fbratio,
+  paste0(analysis_dir, "/tabs/FBratio_table.csv"),
+  row.names = FALSE,
+  col.names = TRUE,
+  sep = ",",
+  quote = FALSE
+)
+```
+
+### Normality
+
+```{r FBratio_normality}
+jmv::descriptives(
+    formula = FBratio ~ Group,
+    data = fbratio,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### t-test
+
+```{r FBratio_comparison_stat}
+jmv::ttestIS(
+    formula = FBratio ~ Group,
+    data = fbratio,
+    vars = FBratio,
+    students = FALSE,
+    mann = TRUE,
+    effectSize = TRUE)
+```
+
+### Plot
+
+Below is a boxplot showing how the FB Ratio differs between groups.
+
+``` {r Section3_FBratio_plot, echo = TRUE, fig.height = 6, fig.width = 6}
+## plot figure
+fbratio_plot <- fbratio %>% 
+  ggplot(aes(x = Group, y = FBratio)) +
+  geom_boxplot(outlier.color = NA,
+               size = 1) +
+  geom_jitter(aes(color = Group),
+              size = 2,
+              alpha = 0.6) +
+  labs(x = "", 
+       y = "F:B Ratio") +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "wilcox.test",
+                     label = "p.signif",
+                     paired = FALSE,
+                     family = "serif",
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  scale_x_discrete(labels = c("Control", "Mod/Sev EHI")) +
+  scale_y_continuous(breaks = seq(0, 16, 2), 
+                     limits = c(0, 16.5)) +
+  scale_color_manual(values = group_cols) +
+  theme_classic() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 24),
+    axis.text.y  = element_text(size = 16),
+    axis.text.x  = element_text(size = 16),
+    legend.position = "none"
+    ) 
+
+## view
+fbratio_plot
+```
+
+## Abundance Comparison All Taxa Function
+
+Below, we will compare all taxa, at each taxonomic level between groups. 
+
+``` {r Section3_abundance_comparison_function}
+compare_abundance_comparison <- function (taxa,
+                                          plot_dat = phyloseq_dat_filter_norm_melt,
+                                          p_type = "individual") {
+  # taxa = "Phylum"
+  # plot_dat = phyloseq_dat_filter_norm_melt
+  # p_type = "individual"
+  
+  ## Get the total abundance across all samples for each OTU for the given taxa
+  tmp <- plot_dat %>%
+    dplyr::group_by(OTU) %>%
+    dplyr::summarise(sum = sum(Abundance))
+  tsums <- tmp[["sum"]]
+  names(tsums) <- tmp[["OTU"]]
+  tsums <- tsums[order(names(tsums))]
+  
+  ## Get the OTU taxa
+  tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+  taxlist <- tmp[, taxa]
+  names(taxlist) <- tmp[, "OTU"]
+  
+  ## Check the data match
+  if (length(tsums) != length(taxlist) ||
+      !all(names(tsums) %in% names(taxlist)) ||
+      !all(names(taxlist) %in% names(tsums))) {
+    stop("Error: tsums and taxlist do not match.\n")
+  }
+  taxlist <- taxlist[names(tsums)]
+  
+  ## Keep only the top taxa and add all other taxa into an "other" class
+  taxasum <-
+    sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+  taxasum <- taxasum[!names(taxasum) == ""]
+  plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+  plot_dat[["TaxName"]] <- factor(plot_dat[[taxa]])
+  
+  ## Combine counts at the taxa level
+  plot_dat <- plot_dat %>%
+    dplyr::group_by(Pair, UIN, Group, Troop, TaxName) %>%
+    dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+    dplyr::filter(TaxName != "Other")
+  
+  ## create separate wide data frame for all taxa of each individual UIN
+  UIN_taxa_wide <- plot_dat
+  UIN_taxa_wide <- UIN_taxa_wide %>%
+    tidyr::pivot_wider(names_from = TaxName,
+                       values_from = Abundance) %>%
+    ## arrange by Pair and Group
+    dplyr::arrange(Pair, Group)
+  
+  ## save as .csv file
+  write.table(
+    UIN_taxa_wide,
+    paste0(
+      analysis_dir,
+      "/tabs/individual_relative_abundance_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  ## Combine at the Group level
+  plot_dat_SE <- plot_dat %>%
+    dplyr::group_by(Group, TaxName) %>%
+    dplyr::summarise(
+      average = ifelse(
+        test_type == "parametric",
+        mean(Abundance),
+        median(Abundance)
+      ),
+      variability = ifelse(
+        test_type == "parametric",
+        sd(Abundance) / sqrt(length(Abundance)),
+        IQR(Abundance)
+      )
+    )
+  
+  ## Calculate p-value across all groups
+  pval <-
+    data.frame(TaxName       = levels(plot_dat_SE[["TaxName"]]),
+               pval          = NA)
+  for (t in pval[["TaxName"]]) {
+    if (test_type == "parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        anova(lm(Abundance ~ Group, data = subset(plot_dat, TaxName == t)))[1, "Pr(>F)"]
+    } else if (test_type == "non-parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        kruskal.test(Abundance ~ Group, data = subset(plot_dat, TaxName == t))[["p.value"]]
+    }
+  }
+  
+  ## Calculate individual p-values vs control
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (g == "Control") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <- 1
+      } else if (test_type == "parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          t.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      } else if (test_type == "non-parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          wilcox.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      }
+    }
+  }
+  
+  ## Add to data frame
+  plot_dat_SE[["pval"]] <- NA
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (p_type == "combine") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, "pval"]
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        }
+      } else if (p_type == "individual") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, paste0("pval.", g)]
+        }
+      }
+    }
+  }
+  
+  ## Correct for multiple testing
+  which_nonna <- which(!is.na(plot_dat_SE[["pval"]]))
+  plot_dat_SE[["padj"]] <- NA
+  plot_dat_SE[which_nonna, "padj"] <-
+    p.adjust(as.numeric(plot_dat_SE[which_nonna,][["pval"]]),
+             method = "fdr",
+             n = nrow(plot_dat_SE[which_nonna,]))
+  
+  ## Convert to star format
+  plot_dat_SE[["padj_star"]] <-
+    case_when(
+      plot_dat_SE[["padj"]] <= 0.001 ~ "***",
+      plot_dat_SE[["padj"]] <= 0.01  ~ "**",
+      plot_dat_SE[["padj"]] <= 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  
+  ## Save the values
+  write.table(
+    plot_dat_SE,
+    paste0(
+      analysis_dir,
+      "/tabs/abundance_comparison_table_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  ## format table
+  plot_dat_format <- plot_dat_SE %>%
+    tidyr::pivot_wider(
+      names_from = Group,
+      values_from = c(average, variability, pval, padj, padj_star)
+    ) %>%
+    dplyr::mutate(
+      average_Control = sprintf("%.1f", average_Control),
+      variability_Control = sprintf("%.1f", variability_Control),
+      average_EHI = sprintf("%.1f", average_EHI),
+      variability_EHI = sprintf("%.1f", variability_EHI),
+      Control = paste0(average_Control, " (", variability_Control, ")"),
+      EHI = paste0(average_EHI, " (", variability_EHI, ")")
+    ) %>%
+    dplyr::rename(pval = pval_EHI,
+                  padj = padj_EHI,
+                  Taxa = TaxName) %>%
+    dplyr::mutate(pval = sprintf("%.3f", as.numeric(pval)),
+                  padj = sprintf("%.3f", as.numeric(padj))) %>%
+    dplyr::select(Taxa, Control, EHI, pval, padj)
+  
+  ## save formatted table
+  write.table(
+    plot_dat_format,
+    paste0(
+      analysis_dir,
+      "/tabs/abundance_comparison_table_formatted_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  return(plot_dat_format)
+}
+```
+
+### Phylum
+
+```{r Section3_abundance_comparison_Phylum}
+phylum_comparison <- compare_abundance_comparison("Phylum")
+phylum_comparison
+
+## filter by pval
+phylum_comparison %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+phylum_comparison %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Class
+
+```{r Section3_abundance_comparison_Class}
+class_comparison <- compare_abundance_comparison("Class")
+class_comparison
+
+## filter by pval
+class_comparison %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+class_comparison %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Order
+
+```{r Section3_abundance_comparison_Order}
+order_comparison <- compare_abundance_comparison("Order")
+order_comparison
+
+## filter by pval
+order_comparison %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+order_comparison %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Family
+
+```{r Section3_abundance_comparison_Family}
+family_comparison <- compare_abundance_comparison("Family")
+family_comparison
+
+## filter by pval
+family_comparison %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+family_comparison %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Genus
+
+```{r Section3_abundance_comparison_Genus}
+genus_comparison <- compare_abundance_comparison("Genus")
+genus_comparison
+
+## filter by pval
+genus_comparison %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+genus_comparison %>%
+  dplyr::filter(padj < 0.05)
+```
+
+
+## Plot Abundance Comparison Function:
+
+### Abundance Comparison Function: Normal Text
+
+The following function will plot the difference between the groups at different taxonomic levels with normal text for taxa:
+
+``` {r Section3_plot_abundance_comparison_normal_text}
+## Function for non-italicised taxa names
+plot_abundance_comparison <- function (taxa,
+                                       plot_dat = phyloseq_dat_filter_norm_melt,
+                                       p_type = "individual",
+                                       nclass = 15) {
+  # taxa = "Phylum"
+  # plot_dat = phyloseq_dat_filter_norm_melt
+  # p_type = "individual"
+  
+  ## Get the total abundance across all samples for each OTU for the given taxa
+  tmp <- plot_dat %>%
+    dplyr::group_by(OTU) %>%
+    dplyr::summarise(sum = sum(Abundance))
+  tsums <- tmp[["sum"]]
+  names(tsums) <- tmp[["OTU"]]
+  tsums <- tsums[order(names(tsums))]
+  
+  ## Get the OTU taxa
+  tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+  taxlist <- tmp[, taxa]
+  names(taxlist) <- tmp[, "OTU"]
+  
+  ## Check the data match
+  if (length(tsums) != length(taxlist) ||
+      !all(names(tsums) %in% names(taxlist)) ||
+      !all(names(taxlist) %in% names(tsums))) {
+    stop("Error: tsums and taxlist do not match.\n")
+  }
+  taxlist <- taxlist[names(tsums)]
+  
+  ## Keep only the top taxa and add all other taxa into an "other" class
+  taxasum <-
+    sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+  taxasum <- taxasum[!names(taxasum) == ""]
+  plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+  plot_dat[is.na(plot_dat[["TaxName"]]) |
+             plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+  plot_dat[["TaxName"]] <-
+    ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+           as.character(plot_dat[[taxa]]),
+           "Other")
+  plot_dat[["TaxName"]] <-
+    factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+  
+  ## Combine counts at the taxa level
+  plot_dat <- plot_dat %>%
+    dplyr::group_by(UIN, Group, TaxName) %>%
+    dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+    dplyr::filter(TaxName != "Other")
+  
+  ## Combine at the Group level
+  plot_dat_SE <- plot_dat %>%
+    dplyr::group_by(Group, TaxName) %>%
+    dplyr::summarise(
+      average = ifelse(
+        test_type == "parametric",
+        mean(Abundance),
+        median(Abundance)
+      ),
+      variability = ifelse(
+        test_type == "parametric",
+        sd(Abundance) / sqrt(length(Abundance)),
+        IQR(Abundance)
+      )
+    )
+  
+  ## Calculate p-value across all groups
+  pval <-
+    data.frame(TaxName       = head(levels(plot_dat_SE[["TaxName"]]),-1),
+               pval          = NA)
+  for (t in pval[["TaxName"]]) {
+    if (test_type == "parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        anova(lm(Abundance ~ Group, data = subset(plot_dat, TaxName == t)))[1, "Pr(>F)"]
+    } else if (test_type == "non-parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        kruskal.test(Abundance ~ Group, data = subset(plot_dat, TaxName == t))[["p.value"]]
+    }
+  }
+  
+  ## Calculate individual p-values vs control
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (g == "Control") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <- 1
+      } else if (test_type == "parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          t.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      } else if (test_type == "non-parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          wilcox.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      }
+    }
+  }
+  
+  ## Add to data frame
+  plot_dat_SE[["pval"]] <- NA
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (p_type == "combine") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, "pval"]
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        }
+      } else if (p_type == "individual") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, paste0("pval.", g)]
+        }
+      }
+    }
+  }
+  
+  ## Correct for multiple testing
+  which_nonna <- which(!is.na(plot_dat_SE[["pval"]]))
+  plot_dat_SE[["pval_adj"]] <- NA
+  plot_dat_SE[which_nonna, "pval_adj"] <-
+    p.adjust(as.numeric(plot_dat_SE[which_nonna,][["pval"]]),
+             method = "fdr",
+             n = nrow(plot_dat_SE[which_nonna,]))
+  
+  ## Convert to star format
+  plot_dat_SE[["pval_adj_star"]] <-
+    case_when(
+      plot_dat_SE[["pval_adj"]] <= 0.001 ~ "***",
+      plot_dat_SE[["pval_adj"]] <= 0.01  ~ "**",
+      plot_dat_SE[["pval_adj"]] <= 0.05  ~ "*",
+      TRUE ~ ""
+    )
+
+  ## Save the values
+  write.table(
+    plot_dat_SE,
+    paste0(
+      analysis_dir,
+      "/tabs/plot_abundance_comparison_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  ## Plot the data
+
+  ## Determine x-axis limits
+  x_max <-
+    max(plot_dat$Abundance, na.rm = TRUE) * 1.02 ## Extend by 2%
+  
+  ## box plots
+  p2 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(TaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_boxplot(
+      width = 0.6,
+      position = position_dodge(0.8),
+      outlier.size = 1,
+      outlier.alpha = 0.8
+    ) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  ## boxplot with individual data points
+  p3 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(TaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_jitter(
+      ## colour jitter by group but flip factors to match fill global aesthetic
+      aes(colour = factor(Group, levels = c("EHI", "Control"))),
+      ## set jitter width and keep dodge consistent
+      position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+      size = 1.2,
+      alpha = 0.6,
+      show.legend = FALSE,
+    ) +
+    geom_boxplot(width = 0.6,
+                 position = position_dodge(0.8),
+                 ## remove outlier dots as we have jitter points
+                 outlier.shape = NA) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  list(
+    BoxPlot = p2,
+    JitterBoxPlot = p3
+    )
+ 
+} 
+```
+
+### Abundance Comparison Function: Italicised Text
+
+The following function will plot the difference between the groups at different taxonomic levels with italicised text for taxa:
+
+```{r Section3_plot_abundance_comparison_italised_text}
+## Function for italicised taxa names
+plot_abundance_comparison2 <- function (taxa,
+                                        plot_dat = phyloseq_dat_filter_norm_melt,
+                                        p_type = "individual",
+                                        nclass = 15) {
+  # taxa = "Genus"
+  # plot_dat = phyloseq_dat_filter_norm_melt
+  # p_type = "individual"
+  # nclass = 15
+  
+  ## Get the total abundance across all samples for each OTU for the given taxa
+  tmp <- plot_dat %>%
+    dplyr::group_by(OTU) %>%
+    dplyr::summarise(sum = sum(Abundance))
+  tsums <- tmp[["sum"]]
+  names(tsums) <- tmp[["OTU"]]
+  tsums <- tsums[order(names(tsums))]
+  
+  ## Get the OTU taxa
+  tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+  taxlist <- tmp[, taxa]
+  names(taxlist) <- tmp[, "OTU"]
+  
+  ## Check the data match
+  if (length(tsums) != length(taxlist) ||
+      !all(names(tsums) %in% names(taxlist)) ||
+      !all(names(taxlist) %in% names(tsums))) {
+    stop("Error: tsums and taxlist do not match.\n")
+  }
+  taxlist <- taxlist[names(tsums)]
+  
+  ## Keep only the top taxa and add all other taxa into an "other" class
+  taxasum <-
+    sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+  taxasum <- taxasum[!names(taxasum) == ""]
+  plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+  plot_dat[is.na(plot_dat[["TaxName"]]) |
+             plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+  plot_dat[["TaxName"]] <-
+    ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+           as.character(plot_dat[[taxa]]),
+           "Other")
+  plot_dat[["TaxName"]] <-
+    factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+  
+  ## Combine counts at the taxa level
+  plot_dat <- plot_dat %>%
+    dplyr::group_by(UIN, Group, TaxName) %>%
+    dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+    dplyr::filter(TaxName != "Other")
+
+  ## Combine at the Group level
+  plot_dat_SE <- plot_dat %>%
+    dplyr::group_by(Group, TaxName) %>%
+    dplyr::summarise(
+      average = ifelse(
+        test_type == "parametric",
+        mean(Abundance),
+        median(Abundance)
+      ),
+      variability = ifelse(
+        test_type == "parametric",
+        sd(Abundance) / sqrt(length(Abundance)),
+        IQR(Abundance)
+      )
+    )
+
+  ## Calculate p-value across all groups
+  pval <-
+    data.frame(TaxName       = head(levels(plot_dat_SE[["TaxName"]]),-1),
+               pval          = NA)
+  for (t in pval[["TaxName"]]) {
+    if (test_type == "parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        anova(lm(Abundance ~ Group, data = subset(plot_dat, TaxName == t)))[1, "Pr(>F)"]
+    } else if (test_type == "non-parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        kruskal.test(Abundance ~ Group, data = subset(plot_dat, TaxName == t))[["p.value"]]
+    }
+  }
+  
+  ## Calculate individual p-values vs control
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (g == "Control") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <- 1
+      } else if (test_type == "parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          t.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      } else if (test_type == "non-parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          wilcox.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      }
+    }
+  }
+  
+  ## Add to data frame
+  plot_dat_SE[["pval"]] <- NA
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (p_type == "combine") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, "pval"]
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        }
+      } else if (p_type == "individual") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, paste0("pval.", g)]
+        }
+      }
+    }
+  }
+  
+  ## Correct for multiple testing
+  which_nonna <- which(!is.na(plot_dat_SE[["pval"]]))
+  plot_dat_SE[["pval_adj"]] <- NA
+  plot_dat_SE[which_nonna, "pval_adj"] <-
+    p.adjust(as.numeric(plot_dat_SE[which_nonna,][["pval"]]),
+             method = "fdr",
+             n = nrow(plot_dat_SE[which_nonna,]))
+  
+  ## Convert to star format
+  plot_dat_SE[["pval_adj_star"]] <-
+    case_when(
+      plot_dat_SE[["pval_adj"]] <= 0.001 ~ "***",
+      plot_dat_SE[["pval_adj"]] <= 0.01  ~ "**",
+      plot_dat_SE[["pval_adj"]] <= 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  
+  ## Save the values
+  write.table(
+    plot_dat_SE,
+    paste0(
+      analysis_dir,
+      "/tabs/plot_abundance_comparison_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  ## Plot the data
+
+  ## Determine x-axis limits
+  x_max <-
+    max(plot_dat$Abundance, na.rm = TRUE) * 1.02 ## Extend by 2%
+  
+  ## box plots
+  p2 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    dplyr::mutate(
+      FormattedTaxName = ifelse(TaxName != "Other", paste("*", TaxName, "*", sep = ""), TaxName),
+      FormattedTaxName = ifelse(
+        FormattedTaxName == "*Eubacterium hallii group*",
+        "*Eubacterium<br>hallii group*",
+        FormattedTaxName
+      )
+    ) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(FormattedTaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_boxplot(
+      width = 0.6,
+      position = position_dodge(0.8),
+      outlier.size = 1,
+      outlier.alpha = 0.8
+    ) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  ## boxplot with individual data points
+  p3 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    dplyr::mutate(
+      FormattedTaxName = ifelse(TaxName != "Other", paste("*", TaxName, "*", sep = ""), TaxName),
+      FormattedTaxName = ifelse(
+        FormattedTaxName == "*Eubacterium hallii group*",
+        "*Eubacterium<br>hallii group*",
+        FormattedTaxName
+      )
+    ) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(FormattedTaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_jitter(
+      ## colour jitter by group but flip factors to match fill global aesthetic
+      aes(colour = factor(Group, levels = c("EHI", "Control"))),
+      ## set jitter width and keep dodge consistent
+      position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+      size = 1.2,
+      alpha = 0.6,
+      show.legend = FALSE,
+    ) +
+    geom_boxplot(width = 0.6,
+                 position = position_dodge(0.8),
+                 ## remove outlier dots as we have jitter points
+                 outlier.shape = NA) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  list(
+    BoxPlot = p2,
+    JitterBoxPlot = p3
+    )
+
+}
+```
+
+### Phylum
+``` {r Section3_plot_abundance_comparison_phylum, fig.height = 5, fig.width = 7}
+plot_abundance_comparison("Phylum", nclass = 6)
+
+phylum_abund_group <- plot_abundance_comparison("Phylum", nclass = 6)
+phylum_abund_group_p <- phylum_abund_group$JitterBoxPlot
+```
+
+### Class
+``` {r Section3_plot_abundance_comparison_class, fig.height = 5, fig.width = 7}
+plot_abundance_comparison("Class")
+```
+
+### Order
+``` {r Section3_plot_abundance_comparison_order, fig.height = 5, fig.width = 7}
+plot_abundance_comparison("Order")
+```
+
+### Family
+``` {r Section3_plot_abundance_comparison_family, fig.height = 5, fig.width = 7}
+plot_abundance_comparison2("Family")
+```
+
+### Genus
+``` {r Section3_plot_abundance_comparison_genus, fig.height = 5, fig.width = 7}
+plot_abundance_comparison2("Genus")
+
+genus_abund_group <- plot_abundance_comparison2("Genus")
+genus_abund_group_p <- genus_abund_group$JitterBoxPlot
+```
+
+# Section 4: Differential Abundance Analysis
+
+## DESeq2
+
+In this section, we will use the [DESeq2](https://bioconductor.org/packages/release/bioc/html/DESeq2.html) package in R to identify differentially abundant bacterial species at the OTU level between the conditions. 
+
+### Setup
+
+``` {r Section4_DESeq2_analysis_setup}
+## Perform the differential expression analysis
+## Run DESeq2 on non-rarefied feature table
+deseq_dat <- phyloseq_dat_deseq
+## plot the abundance non-rarefied feature table
+deseq_plot <- phyloseq_dat_norm_melt 
+```
+
+### Group model
+
+``` {r Section4_DESeq2_model_1}
+## create DESeq2 object from phyloseq object
+dds_model1 <- phyloseq_to_deseq2(deseq_dat, design = ~ Group) 
+
+## Pre-filtering
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds_model1) >= 10) >= smallestGroupSize
+dds_model1 <- dds_model1[keep,]
+
+## estimation of size factors was set to use ‘poscounts’, which calculates a modified relative log expression that helps account for features missing in at least one sample
+dds_model1 <- DESeq(dds_model1, test = "Wald", fitType = "parametric", sfType = "poscounts")
+
+## Plot deseq2 object
+plotDispEsts(dds_model1)
+## coefficients DESeq estimated:
+resultsNames(dds_model1)
+
+## sum all deviance values and na.rm set as TRUE to ignore NAs
+dds_model1_dev <- sum(mcols(dds_model1)$deviance, na.rm = TRUE)
+dds_model1_dev
+
+## results
+res_model1 <- results(dds_model1, 
+                      contrast = c("Group", "EHI", "Control"), 
+                      tidy = TRUE, 
+                      format = "DataFrame")
+
+rownames(res_model1) <- res_model1$row
+
+res_model1 <- res_model1[,-1]
+
+## summary 
+summary(res_model1)
+
+length(res_model1$padj)
+```
+
+### Functions
+
+Below are a number of functions that will generate results and plots for the various Group comparisons that will be made.
+
+```{r Section4_DESeq2_analysis_functions}
+## Function to take the results from a specific contrast from DESeq2 and return a significance table
+signif_OTU <- function (diff_OTU) {
+  diff_OTU <- subset(diff_OTU, !is.na(padj) & padj <= 0.05 & abs(log2FoldChange) >= 1)
+  if(nrow(diff_OTU) == 0) return(NULL)
+  diff_OTU <- cbind(as(diff_OTU, "data.frame"), as(tax_table(deseq_dat)[rownames(diff_OTU), ], "matrix"))
+  diff_OTU <- diff_OTU[order(diff_OTU[["padj"]], decreasing = FALSE),]
+  diff_OTU[["OTU"]] <- rownames(diff_OTU)
+  diff_OTU[["OTU_num"]] <- 1:nrow(diff_OTU)
+  return(diff_OTU)
+}
+
+## Function to plot a specific OTU
+plot_OTU <- function (otu) {
+    ggplot(subset(deseq_plot, OTU == otu),
+           aes(x = Group, y = Abundance, fill = Group)) +
+    geom_boxplot() + 
+    ggtitle(paste(c(otu, as.character(unlist(subset(deseq_plot, OTU == otu)[1, c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")]))), collapse = "; ")) + 
+    labs(x = "", y = "Relative Abundance") +
+    scale_fill_manual(values = group_cols) +
+    scale_y_continuous(labels = scales::label_percent(scale = 1)) +
+    theme(
+      text = font,
+      plot.title = element_text(size = 8),
+      axis.title   = element_text(size = 18),
+      axis.text.y  = element_text(size = 16),
+      axis.text.x  = element_text(angle = 90, hjust = 1, size = 24),
+      legend.text  = element_text(size = 22),
+      legend.title = element_text(size = 22, face = "bold")
+      )
+}
+
+## Function to process a specific comparison
+diff_out <- function (i, j, plot = TRUE) {
+  
+    ## Get the significant OTUs
+    if (i == j) {
+      cat ("Error: ", i, " and ", j, " must be different\n")
+      return (NULL)
+    }
+    ## dds_model1 used for ~Group design
+    all_OTU <- results(dds_model1, contrast = c("Group", i, j)) 
+    diff_OTU <- signif_OTU(all_OTU)
+    if(is.null(diff_OTU)) {
+      cat ("Error: No significant differences identified for ", i, " vs ", j, "\n")
+      return (list("All"    = all_OTU,
+                   "Signif" = NULL,
+                   "Up"     = NULL,
+                   "Down"   = NULL))
+    }
+    
+    ## Save the results
+    write.table(diff_OTU, paste0(analysis_dir, "/tabs/DESeq2_SIGNIF_OTUs_", i, "_vs_", j, "_log2foldchange.csv"),
+                row.names = FALSE, col.names = TRUE, sep = ",", quote = FALSE)
+    
+    ## Plot the data for these OTUs
+    if (plot) {
+      outdir <- paste0(analysis_dir, "/figs/SIGNIF_OTUs2_", i, "_vs_", j, "/")
+      if(file.exists(outdir)) {
+        unlink(outdir, recursive = TRUE)
+        dir.create(outdir)
+      }
+      for (k in diff_OTU[["OTU_num"]]) {
+        otu <- rownames(diff_OTU)[k]
+        ggsave(filename = paste0(outdir, "OTU_", k, "_", otu, ".png"), 
+               plot = plot_OTU(otu), 
+               height = 6, width = 8, unit = "in", dpi = 300)
+      }
+    }
+    
+    ## Return the results
+    return (list("All"    = all_OTU,
+                 "Signif" = diff_OTU,
+                 "Up"     = subset(diff_OTU, log2FoldChange > 0),
+                 "Down"   = subset(diff_OTU, log2FoldChange < 0)))
+}
+
+## Function to plot a volcano plot for the results using ggplot2
+plot_volcano <- function(x) {
+  if (length(x) == 0) return(NULL)
+  
+  # Create a data frame for plotting
+  plot_dat <- x[["All"]]
+  plot_col <- rep("black", nrow(plot_dat))
+  which_down <- which(rownames(plot_dat) %in% rownames(x[["Down"]]))
+  which_up <- which(rownames(plot_dat) %in% rownames(x[["Up"]]))
+  plot_col[which_down] <- "blue"
+  plot_col[which_up] <- "red"
+  plot_dat_df <- data.frame(
+    log2FoldChange = plot_dat$log2FoldChange,
+    padj = plot_dat$padj,
+    plot_col = factor(plot_col)
+  )
+  
+  # Create the volcano plot using ggplot2
+  p <- ggplot(data = plot_dat_df, aes(x = log2FoldChange, y = -log10(padj), color = plot_col)) +
+    geom_point(size = 3,
+               #shape = 1,
+               alpha = 0.3) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = log2(2), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = -log2(2), linetype = "dashed", color = "black") +
+    scale_color_manual(values = c("black", "blue", "red")) +
+    labs(x = "log2(Fold Change)", y = "-log10(P Value)") +
+    # scale_x_continuous(breaks = seq(-6, 6, 2)) +
+    theme_classic() +
+    theme(
+      text = font,
+      legend.position = "none",
+      plot.title = element_text(size = 12),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 16),
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 12, face = "bold"))
+    
+  
+  return(p)
+}
+
+#### modified below:
+plot_volcano2 <- function(x) {
+  if (length(x) == 0) return(NULL)
+  
+  ## Create a data frame for plotting
+  plot_dat <- x[["All"]]
+  which_down <- which(rownames(plot_dat) %in% rownames(x[["Down"]]))
+  which_up <- which(rownames(plot_dat) %in% rownames(x[["Up"]]))
+  plot_col <- rep("black", nrow(plot_dat))
+  plot_col[which_down] <- "blue"
+  plot_col[which_up] <- "red"
+  
+  plot_dat_df <- data.frame(
+    log2FoldChange = plot_dat$log2FoldChange,
+    padj = plot_dat$padj,
+    plot_col = factor(plot_col),
+    label = rownames(plot_dat)  ## Use rownames for labels to annotate plot
+  )
+  
+  ## Create the volcano plot using ggplot2
+  p <- ggplot(data = plot_dat_df, aes(x = log2FoldChange, y = -log10(padj), color = plot_col)) +
+    geom_point(size = 3, alpha = 0.3) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = log2(2), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = -log2(2), linetype = "dashed", color = "black") +
+    scale_color_manual(values = c("black", "blue", "red")) +
+    labs(x = "log2(Fold Change)", y = "-log10(P Value)") +
+    theme_classic() +
+    theme(
+      text = font,
+      legend.position = "none",
+      plot.title = element_text(size = 12),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 16),
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 12, face = "bold")
+    ) +
+    ## Use ggrepel for text repelling, only for OTUs with -log10(padj) > 0.05
+    geom_text_repel(
+      data = plot_dat_df[which_down | which_up, ],
+      aes(label = ifelse(-log10(padj) > 0.05, as.character(label), "")), 
+      box.padding = 0.5,
+      point.padding = 0.1,
+      segment.size = 0.2,
+      vjust = 1.5,
+      hjust = 0,
+      size = 3
+    )
+  
+  return(p)
+}
+
+## Function to get the top hits from the DESeq2 analysis
+get_top_hits <- function(x, n = 10) {
+  if (length(x) == 0) return()
+  
+  # Get the top up and downregulated hits
+  positive_df <- head(x[["Up"]][order(x[["Up"]][["log2FoldChange"]], decreasing = TRUE), ], min(n, nrow(x[["Up"]])))
+  negative_df <- tail(x[["Down"]][order(x[["Down"]][["log2FoldChange"]], decreasing = TRUE), ], min(n, nrow(x[["Down"]])))
+  df <- rbind.data.frame(positive_df, negative_df)
+  df[["Direction"]] <- c(rep("Increase", min(n, nrow(x[["Up"]]))), rep("Decrease", min(n, nrow(x[["Down"]]))))
+  
+  df[["Taxa"]] <- factor(paste(otu_or_asv, df[["OTU_num"]], ": ", df[["Genus"]], sep = ""), 
+                                 levels = paste(otu_or_asv, df[["OTU_num"]], ": ", df[["Genus"]], sep = ""))
+  
+  # Create a bar plot using the log2FoldChange values and updated sample names, with colored bars
+  df %>%
+    ggplot(aes(x = Taxa, y = log2FoldChange, fill = Direction)) +
+    geom_bar(stat='identity') +
+    coord_flip() +
+    scale_fill_manual(values = c('Increase' = "#117744", 'Decrease' = "#DC3220")) +
+    ylab("log2 (Fold Change)") + xlab("") +
+    # scale_y_continuous(breaks = seq(-6, 6, 2)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title   = element_text(size = 14),
+      axis.text.y  = element_text(size = 16, face = "bold"),
+      axis.text.x  = element_text(size = 14),
+      legend.position = "none",
+      panel.grid.major.x = element_line(colour = "lightgrey", linewidth = 0.25)
+          )   
+}
+```
+
+### Results
+The following results show the differentially abundant taxa between the Patient and Control samples. 
+
+``` {r Section4_DESeq2_analysis_cases_vs_control}
+DE_EHIvC <- diff_out("EHI", "Control", plot = FALSE)
+cat("Total number of differentially abundant OTUs: ", nrow(DE_EHIvC[["Signif"]]))
+cat("Upregulated number of differentially abundant OTUs: ", nrow(DE_EHIvC[["Up"]]))
+cat("Downregulated number of differentially abundant OTUs: ", nrow(DE_EHIvC[["Down"]]))
+```
+
+#### Volcano
+
+Below is a volcano plot showing the overall differential abundance results for this comparison.
+
+``` {r Section4_DESeq2_analysis_cases_vs_control_volcano, fig.height = 5, fig.width = 7}
+volcano_p <- plot_volcano(DE_EHIvC)
+volcano_p
+```
+
+volcano plot with sig ASVs highlighted
+
+``` {r Section4_DESeq2_analysis_cases_vs_control_volcano2, fig.height = 10, fig.width = 8}
+volcano_p <- plot_volcano2(DE_EHIvC)
+volcano_p
+```
+
+## ALDEx2
+
+### Setup
+
+```{r Section4_ALDEx2_setup}
+#library(ALDEx2)
+
+## create ASV_table from phyloseq object
+ASV_table = otu_table(phyloseq_dat_deseq)
+
+## create groupings variable from phyloseq object
+groupings = phyloseq_dat_deseq %>%
+  sample_data() %>%
+  .$Group %>%
+  ## make groupings a character vector! 
+  as.character()
+
+ncol(ASV_table)
+length(groupings)
+```
+
+### Model
+
+```{r Section4_ALDEx2_model, cache = TRUE}
+results <- aldex(reads = ASV_table, 
+                 conditions = groupings, 
+                 mc.samples = 128, 
+                 test="t", 
+                 effect=TRUE,
+                 include.sample.summary = TRUE, 
+                 CI = TRUE,
+                 verbose = TRUE, 
+                 denom="all")
+```
+
+### Results
+
+```{r Section4_ALDEx2_results}
+## Expected p-value of Wilcoxon rank test
+results %>%
+  dplyr::filter(we.eBH < 0.05)
+
+## Expected Benjamini-Hochberg corrected p-value of Wilcoxon test
+results %>%
+  dplyr::filter(wi.eBH < 0.05)
+```
+
+## ANCOMBC
+
+### Setup
+
+https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOM.html
+
+```{r Section4_ANCOMBC_setup}
+## object to use
+phyloseq_dat_deseq 
+## make a copy for ancom analysis
+ancom_phyloseq = phyloseq_dat_deseq
+## Set Group variable as character string 
+phyloseq::sample_data(ancom_phyloseq)$Group <- as.character(sample_data(ancom_phyloseq)$Group)
+## Check that levels are now NULL
+levels(sample_data(ancom_phyloseq)$Group)
+## Make sure names are still "Control" and "EHI"
+unique(sample_data(ancom_phyloseq)$Group)
+```
+
+### Model
+
+```{r Section4_ANCOMBC_model}
+## use ANCOMBC with phyloseq object
+out = ancombc(data = NULL, 
+              assay_name = NULL,
+              tax_level = NULL, 
+              phyloseq = phyloseq_dat_deseq,
+              formula = "Group",
+              p_adj_method = "BH", 
+              prv_cut = 0.10, 
+              lib_cut = min_otus,
+              group = "Group", 
+              struc_zero = TRUE, 
+              neg_lb = TRUE,
+              tol = 1e-5, 
+              max_iter = 100, 
+              conserve = FALSE,
+              alpha = 0.05, 
+              global = TRUE, 
+              n_cl = 1, 
+              verbose = TRUE)
+```
+
+### Results
+
+```{r Section4_ANCOMBC_results}
+## Result from the ANCOM-BC log-linear model to determine taxa that are differentially abundant according to the covariate of interest. It contains: 1) log fold changes; 2) standard errors; 3) test statistics; 4) p-values; 5) adjusted p-values; 6) indicators whether the taxon is differentially abundant (TRUE) or not (FALSE).
+res = out$res
+
+## Set Colnames
+col_names = c("Taxon", "Intercept", "Group")
+
+## 1) log fold changes
+res_lfc = res$lfc
+colnames(res_lfc) = col_names
+#res_lfc
+## 2) standard errors
+res_se = res$se
+colnames(res_se) = col_names
+#res_se
+## 3) test statistics
+res_w = res$W
+colnames(res_w) = col_names
+#res_w
+## 4) p-values
+res_p = res$p_val
+colnames(res_p) = col_names
+#res_p
+## 5) adjusted p-values
+res_padj = res$q_val
+colnames(res_padj) = col_names
+#res_padj
+## 6) indicators whether the taxon is differentially abundant (TRUE) or not (FALSE).
+res_da = res$diff_abn
+colnames(res_da) = col_names
+#res_da
+## check if we have TRUE
+unique(res_da$Group)
+```
+
+```{r Section4_ANCOM_save_results}
+library(openxlsx)
+## Create list of ANCOM results
+ancom_res_list <- list(
+  "Log_Fold_Change" = res_lfc,
+  "Standard_Errors" = res_se,
+  "Test_Statistics" = res_w,
+  "p_value" = res_p,
+  "BH_Adjusted_p_value" = res_padj,
+  "Dif_Abun_T_or_F" = res_da
+)
+
+## Save ANCOM results into a single workbook
+openxlsx::write.xlsx(ancom_res_list,
+                     file = paste0(analysis_dir, "/tabs/ANCOM_results.xlsx"))
+
+```
+
+## Compare Methods
+
+```{r Section4_compare}
+## DESeq2 results to use
+deseq_res = DE_EHIvC$Signif
+## set rownames as a new colmun called Taxon
+deseq_res = rownames_to_column(deseq_res, var = "Taxon")
+## count number of sig ASVs using nrow()
+nrow(deseq_res)
+## Select only Taxon column
+deseq_res = deseq_res %>%
+  dplyr::select(Taxon)
+
+## ALDEx2 results to use
+aldex2_res = results
+## set rownames as a new colmun called Taxon
+aldex2_res = rownames_to_column(aldex2_res, var = "Taxon")
+## Filter for only p adjust < 0.05
+aldex2_res = results %>%
+  dplyr::filter(wi.eBH < 0.05)
+## count number of sig ASVs using nrow()
+nrow(aldex2_res)
+## As we have 0 hits, we will create an empty vector for venn diagram
+aldex2_hits = character(nrow(aldex2_res))
+
+## ANCOMBC results, filter for only p adjust < 0.05
+ancombc_res = res_padj %>%
+  dplyr::filter(Group < 0.05)
+## count number of sig ASVs using nrow()
+nrow(ancombc_res)
+## Select only Taxon column
+ancombc_res = ancombc_res %>%
+  dplyr::select(Taxon)
+## As we have 0 hits, we will create an empty vector for venn diagram
+ancombc_hits = character(nrow(ancombc_res))
+
+## Prepare the a list for venn diagram plotting.
+da_list <- list(
+  DESeq2 = deseq_res$Taxon,
+  ALDEx2 = aldex2_hits,  
+  "ANCOM-BC" = ancombc_hits
+)
+```
+
+### Venn Diagram
+
+```{r Section4_venn_diagram, fig.height = 8, fig.width = 8}
+## Change font, code from https://stackoverflow.com/questions/6699950/r-geom-venn-how-to-change-font
+venn_font <- function(p, font)
+{
+
+  grep_grob <- function(gt, lab){
+    which(sapply(gt, function(x) grepl(lab, x$name)))
+  }
+  
+  p2 <- ggplot_gtable(ggplot_build(p))
+  mygrobs <- p2$grobs
+  panel_grob <- mygrobs[[grep_grob(mygrobs, "panel")]]
+  venn_grob <- panel_grob$children[[grep_grob(panel_grob$children, "venn")]]
+  text_grob <- venn_grob$children[grep_grob(venn_grob$children, "text")]
+  text_grob <- do.call(grid::gList, 
+                       lapply(text_grob, 
+                              function(x) {x$gp$fontfamily <- font; 
+                                           x}))
+  venn_grob$children[grep_grob(venn_grob$children, "text")] <- text_grob
+  panel_grob$children[[grep_grob(panel_grob$children, "venn")]] <- venn_grob
+  mygrobs[[grep_grob(mygrobs, "panel")]] <- panel_grob
+  p2$grobs <- mygrobs
+  grid::grid.newpage()
+  grid::grid.draw(p2)
+}
+
+## Combine all taxa into a single vector and make it unique
+venn_all_taxa <- unique(unlist(da_list))
+
+## Create a data frame where each row is a unique taxa
+venn_df <- data.frame(Taxon = venn_all_taxa)
+
+## For each method, create a column in taxa_df indicating presence or absence of each taxon
+for(method in names(da_list)) {
+  venn_df[[method]] <- venn_df$Taxon %in% da_list[[method]]
+}
+
+## view
+venn_df
+
+## create venn diagram
+venn_p <- ggplot(venn_df) +
+  geom_venn(
+    aes(A = DESeq2, B = `ALDEx2`, C = `ANCOM-BC`),
+    fill_color = c("#E69F00", "#56B4E9", "green"),
+    text_size = 5
+  ) +
+  coord_fixed() +
+  theme_void()
+
+venn_p
+
+## use custom function to set font as serif
+venn_font(venn_p, font = "serif")
+```
+
+## Microbiome Analysis Panel
+
+```{r Section4_microbiome_panel, fig.height = 22, fig.width = 17}
+## Arrange the figures
+arrange_row1 <- ggarrange(adiv_group_plot, 
+                          bdiv_group_plot,
+                          ncol = 2, 
+                          labels = LETTERS[1:2], 
+                          font.label = list(size = 18, 
+                                            face = "bold", 
+                                            family = "serif"))
+
+
+arrange_row2 <- ggarrange( 
+                          phylum_abund_group_p, 
+                          genus_abund_group_p,
+                          ncol = 2, 
+                          labels = LETTERS[3:4], 
+                          font.label = list(size = 18, 
+                                            face = "bold", 
+                                            family = "serif"),
+                          common.legend = TRUE,
+                          legend = "bottom")
+
+## edit bottom margin to allow more space for common legend
+arrange_row2 <- arrange_row2 +
+  theme(plot.margin = margin(
+    t = 0.2,
+    r = 0.2,
+    b = 0.4,
+    l = 0.2,
+    unit = "inches"
+  ))
+
+## Create an empty plot to use as a spacer
+empty_plot <- ggplot() + theme_void()
+
+arrange_row3 <- ggarrange(empty_plot, 
+                          fbratio_plot,
+                          empty_plot,
+                          venn_p,
+                          ncol = 4, 
+                          labels = c("", LETTERS[5], "", LETTERS[6]), 
+                          font.label = list(size = 18, 
+                                            face = "bold", 
+                                            family = "serif"),
+                          widths = c(0.2, 0.5, 0.2, 1))
+
+microbiome_panel <- ggarrange(arrange_row1,
+                              arrange_row2,
+                              arrange_row3,
+                              nrow = 3,
+                              heights = c(0.8,1,0.9))
+
+## view 
+microbiome_panel
+
+## Save
+ggsave(
+  filename = paste0(
+    analysis_dir,
+    "figs/GRANNUS_microbiome_modsev_control_panel",
+    ".png"
+  ),
+  plot = microbiome_panel,
+  height = 22,
+  width = 17,
+  unit = "in",
+  dpi = 600
+)
+
+## Save
+ggsave(
+  filename = paste0(
+    analysis_dir,
+    "figs/GRANNUS_microbiome_modsev_control_panel",
+    ".jpeg"
+  ),
+  plot = microbiome_panel,
+  height = 22,
+  width = 17,
+  unit = "in",
+  dpi = 600
+)
+```
+
+Section 5 removed.
+
+# Section 6: Positive Control Analysis
+This data set contained samples generated from the [Zymobiomics Microbial Community Standard](https://zymoresearch.eu/collections/zymobiomics-microbial-community-standards/products/zymobiomics-microbial-community-standard). This is used to assess bias and errors in the extraction methods and identify potential contamination across the data set. 
+
+## Theoretical distribution
+These samples have a theoretical Composition Based on Genomic DNA which should be represented in the output distributions following data processing alongside the other samples in the data set. This distribution is as follows:
+
+Listeria monocytogenes - 12%, Pseudomonas aeruginosa - 12%, Bacillus subtilis - 12%, Escherichia coli - 12%, Salmonella enterica - 12%, Lactobacillus fermentum - 12%, Enterococcus faecalis - 12%, Staphylococcus aureus - 12%, Saccharomyces cerevisiae - 2%, and Cryptococcus neoformans - 2%
+
+Note that only the bacterial species (all excluding Saccharomyces cerevisiae and Cryptococcus neoformans) will be identified through 16S rRNA amplicon based sequencing. The theoretical distribution for only the bacterial species is shown below:
+
+``` {r Section6_PC_barplot_theoretical_abundance_stacked, fig.height = 6, fig.width = 6.5}
+theo <- data.frame(species = c("*Listeria monocytogenes*", "*Pseudomonas aeruginosa*", 
+                               "*Bacillus subtilis*", "*Escherichia coli*", 
+                               "*Salmonella enterica*", "*Lactobacillus fermentum*", 
+                               "*Enterococcus faecalis*", "*Staphylococcus aureus*"),
+                   percent = rep(12.5, 8),
+                   rep     = "1",
+                   group = rep("Positive Control<br>Theoretical Distribution", 8))
+
+theo_cols = c("*Bacillus subtilis*" = "#771122",
+              "*Escherichia coli*" = "#114477",
+              "*Lactobacillus fermentum*" = "#77CCCC",
+              "*Staphylococcus aureus*" = "#AA4488",
+              "*Salmonella enterica*" = "#DDDD77",
+              "*Listeria monocytogenes*" = "#AA7744",
+              "*Enterococcus faecalis*" = "#777711",
+              "*Pseudomonas aeruginosa*" = "#AAAA44"
+              )
+
+theo_plot <- ggplot(theo, aes(x = rep, 
+                 y = percent, 
+                 fill = species)) + 
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::label_percent(scale = 1),
+                     expand = expansion(add = c(0, 1))) +
+  scale_fill_manual(values = theo_cols) +
+  labs(x = "", 
+       y = "Relative Abundance") + 
+  facet_wrap(~group) +
+  theme_bw() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 18),
+    axis.text.y  = element_text(size = 16),
+    axis.text.x  = element_blank(),
+    legend.text  = element_markdown(size = 16),
+    legend.title = element_blank(),
+    strip.text.x = element_markdown(size = 16, face = "bold")) +
+  guides(fill = guide_legend(ncol = 1))
+
+theo_plot
+```
+
+The total number of taxa (in thousands) for the PC samples is shown below.
+
+``` {r Section6_QC_OTU_count_PC, fig.height = 6, fig.width = 10}
+## print counts
+data.frame(sample_data(phyloseq_dat_PC)) %>%
+  dplyr::mutate(count = sample_sums(phyloseq_dat_PC)) %>%
+  dplyr::mutate(Group = str_replace(Group, "PositiveControl", "Positive Control")) %>%
+  dplyr::select(sample_code, Rep, count) 
+
+## plot counts
+data.frame(sample_data(phyloseq_dat_PC)) %>%
+  dplyr::mutate(count = sample_sums(phyloseq_dat_PC)) %>%
+  dplyr::mutate(Group = str_replace(Group, "PositiveControl", "Positive Control")) %>%
+  ggplot(aes(x = Rep, y = count / 1000, fill = Rep)) +
+  geom_bar(stat = "identity",
+           position = "dodge",
+           color = "black") +
+  xlab("") + 
+  ylab(paste0("Total Number ", otu_or_asv, "s (x1000)")) +
+  facet_wrap(. ~ Group, scales = "free_x") +
+  geom_hline(yintercept = min_otus / 1000,
+             linetype = 2,
+             linewidth = 1.2) +
+  scale_fill_manual(values = custom_col16) +
+  theme_bw() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 18),
+    axis.text.y  = element_text(size = 12),
+    axis.text.x  = element_text(
+      size = 14,
+      angle = 315,
+      face = "bold",
+      hjust = 0
+    ),
+    legend.position = "none",
+    strip.text.x = element_text(size = 20, face = "bold"),
+    strip.text.y = element_text(size = 16, face = "bold")
+  )
+```
+
+Then we filter to remove the samples with too few taxa, rarefy to the depth of the lowest sample, and normalise to percentage abundance as we did above.
+
+``` {r Section6_PC_analysis_setup}
+## Filter to remove samples with fewer than min_otus
+phyloseq_dat_PC_filter <- prune_samples(sample_sums(phyloseq_dat_PC) >= min_otus, phyloseq_dat_PC)
+
+## Rarefy the data to the minimum otu depth
+set.seed(0)
+rarefy_otu_depth <- min(sample_sums(phyloseq_dat_PC_filter))
+cat("Rarefication of data to", rarefy_otu_depth, "OTUs:\n")
+phyloseq_dat_PC_filter <- rarefy_even_depth(phyloseq_dat_PC_filter, rarefy_otu_depth, verbose = FALSE)
+
+## Normalise the data
+phyloseq_dat_PC_filter_norm <- transform_sample_counts(phyloseq_dat_PC_filter, function (x) 100* ((x+1) / sum(x+1)))
+
+## Create data for barplots
+phyloseq_dat_PC_filter_norm_melt <- psmelt(phyloseq_dat_PC_filter_norm) %>%
+  dplyr::mutate(Genus = ifelse (Genus == "Limosilactobacillus", "Lactobacillus", Genus)) %>% 
+  dplyr::mutate(Genus = ifelse (Genus == "Escherichia-Shigella", "Escherichia", Genus))
+```
+
+## Chi-squared
+
+Below is a chi-squared based comparison between the PC replicates against the expected distribution:
+
+``` {r Section_6_PC_comparison_with_expected}
+## Get the theoretical distribution
+PC_comp <- theo %>%
+  ## remove "*" from names
+  dplyr::mutate(species = gsub("\\*", "", species))
+PC_comp[["Genus"]] <- gsub(" .*$", "", PC_comp[["species"]])
+PC_comp <- PC_comp[, c("Genus", "percent")]
+names(PC_comp)[2] <- "Zymo"
+
+## Get the abundance for all of the species in the positive control
+PC_abun <- phyloseq_dat_PC_filter_norm_melt %>%
+  ## Change where NA is present for Genus column to Salmonella
+  dplyr::mutate(Genus = ifelse(!is.na(Family) & Family == "Enterobacteriaceae" & is.na(Genus), "Salmonella", Genus)) %>%
+  ## Make uncultured NA
+  dplyr::mutate(Genus = ifelse(is.na(Genus) | Genus == "uncultured", NA, Genus)) %>%
+  ## Set levels
+  dplyr::mutate(Genus = factor(Genus, levels = unique(Genus))) %>%
+  dplyr::group_by(Genus, Sample) %>%
+  dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  dplyr::filter(Genus %in% PC_comp[["Genus"]]) %>%
+  tidyr::spread(key = Sample, value = Abundance)
+
+PC_abun
+
+## Combine and save
+PC_abun_merge <- merge(PC_comp, PC_abun, by = "Genus")
+write.table(
+  PC_abun_merge,
+  paste0(analysis_dir, "/tabs/PC_abundance_comparison.csv"),
+  sep = ",",
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE
+)
+
+## Chi-squared test: all data including theo
+csqtest_theo <- chisq.test(PC_abun_merge[, -1])
+csqtest_theo
+
+## Just compare replicates to each other
+csqtest <- chisq.test(PC_abun_merge[, -c(1:2)])
+csqtest
+```
+
+
+## Plot
+
+The distribution of taxa at the Genus level is shown below for the PC samples:
+
+``` {r Section6_PC_barplot_top_genus_normalised_abundance_stacked, fig.height = 8, fig.width = 6.5}
+## create new dataframe to use for positive controls
+pc_df <- phyloseq_dat_PC_filter_norm_melt %>%
+  # Change where NA is present for Genus column to Salmonella
+  dplyr::mutate(Genus = ifelse(!is.na(Family) & Family == "Enterobacteriaceae" & is.na(Genus), "Salmonella", Genus)) %>%
+  # Make uncultured NA
+  dplyr::mutate(Genus = ifelse(is.na(Genus) | Genus == "uncultured", NA, Genus)) %>%
+  # Set levels for Genus
+  dplyr::mutate(Genus = factor(Genus, levels = unique(Genus)))
+
+## now plot barplot
+PC_plot_df <- plot_barplot2("Genus", pc_df, "Positive_Control")
+## show plot
+PC_plot_df[[1]] 
+## Save plot for additional plotting
+PC_plot <- PC_plot_df[[1]] 
+
+## chi-squared stats
+stat <- round(csqtest$statistic,3)
+df <- csqtest$parameter
+p_value <- round(csqtest$p.value, 3)
+
+## title
+title <- bquote("Chi-Squared: " ~ {X^2}["(" * .(df) * ")"] ~ "=" ~ .(stat) * ", " ~ italic(p) ~ "=" ~ .(p_value))
+caption <- "Chi-Squared test comparing all replicates."
+
+PC_plot <- PC_plot +
+  scale_x_discrete(labels = c("Rep 1", "Rep 2", "Rep 3", "Rep 4", "Rep 5",
+                              "Rep 6", "Rep 7", "Rep 8", "Rep 9", "Rep 10",
+                              "Rep 11")) +
+  theme_classic() +
+  labs(title = title,
+       caption = caption) +
+  facet_wrap(~Group) +
+  theme(
+    text = font,
+    title = element_text(size = 16),
+    plot.caption = element_text(size = 12),
+    plot.caption.position = "plot",
+    axis.title   = element_text(size = 24),
+    axis.text.y  = element_text(size = 16),
+    axis.text.x  = element_text(size = 22, angle = 90, vjust = 0.5),
+    legend.text  = element_markdown(size = 14),
+    legend.title = element_blank(),
+    strip.text.x = element_text(size=26, face = "bold")) 
+
+## view
+PC_plot
+
+## PC plot with theo, and chi-squared test stats including theo 
+## chi-squared stats
+stat_theo <- round(csqtest_theo$statistic,3)
+df_theo <- csqtest_theo$parameter
+p_value_theo <- round(csqtest_theo$p.value, 3)
+
+## title
+title <- bquote("Chi-Squared: " ~ {X^2}["(" * .(df_theo) * ")"] ~ "=" ~ .(stat_theo) * ", " ~ italic(p) ~ "=" ~ .(p_value_theo))
+caption <- "Chi-Squared test comparing all replicates and theoretical distribution."
+
+PC_plot_theo <- theo_plot +
+  theme_classic() +
+  labs(title = title,
+       caption = caption) +
+  theme(
+    text = font,
+    title = element_text(size = 16),
+    plot.caption = element_text(size = 12),
+    plot.caption.position = "plot",
+    axis.title   = element_text(size = 24),
+    axis.text.y  = element_text(size = 16),
+    axis.text.x  = element_blank(),
+    legend.text  = element_markdown(size = 14),
+    legend.title = element_blank(),
+    strip.text.x = element_markdown(size=16, face = "bold")) 
+
+PC_plot_theo
+```
+
+# Section 7: Negative Control Analysis
+
+## Taxa count
+The total number of taxa for the NFW samples is shown below. This should be as low as possible for all replicates 
+
+``` {r Section7_QC_OTU_count_NFW, fig.height = 8, fig.width = 6}
+NC_plot <- data.frame(sample_data(phyloseq_dat_NFW)) %>%
+  dplyr::mutate(count = sample_sums(phyloseq_dat_NFW)) %>%
+  dplyr::mutate(Group = str_replace(Group, "NegativeControl", "Negative Control")) %>%
+  ggplot(aes(x = Rep, y = count, fill = Rep)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  xlab("") + 
+  #ylab(paste0("Total Number ", otu_or_asv, "s")) +
+  ylab("Read Count") +
+  facet_wrap(.~Group, scales = "free_x") +
+  #scale_x_discrete(expand=c(0,0)) +
+  scale_y_continuous(expand = expansion(add = c(0, 1))) +
+  theme_classic() +
+    theme(
+      text = font,
+      axis.title   = element_text(size = 24),
+      axis.text.y  = element_text(size = 16),
+      axis.text.x  = element_text(size = 22, angle = 90, vjust = 0.5),
+      legend.position = "none",
+      strip.text.x = element_text(size=26, face = "bold")
+      )
+
+## view
+NC_plot
+
+## print rownames (otu id) with counts greater than 1
+otu_table(phyloseq_dat_NFW)[apply(otu_table(phyloseq_dat_NFW), 1, max) > 1, ]
+
+## check tax table
+## rep 8 is 0005
+tax_table(phyloseq_dat_NFW)["0754f8f2affc62076685af91be1cf6f2",]
+tax_table(phyloseq_dat_NFW)["d011d3cefa7bde7276d26b61a1c6b0f2",]
+## rep 3 is 0011
+tax_table(phyloseq_dat_NFW)["81baf44dadb0e7cd124a8420aeae15e8",]
+
+caption <- "Rep 3 contains one unique ASV \"Bacteria\" that is NA.<br>Rep 8 contains two unique ASVs that are \"Unassigned\"."
+
+## plot
+NC_plot_caption <- NC_plot +
+  labs(caption = caption) +
+  theme(plot.caption = element_markdown(size = 12))
+
+NC_plot_caption
+```
+
+```{r Section7_pos_neg_control_panel, echo = TRUE, fig.height = 10, fig.width = 18.5}
+#plot_widths <- c(1,0.8)
+## create positive and negative control panel
+P_N_con_panel <- ggarrange(
+  PC_plot,
+  PC_plot_theo,
+  NC_plot_caption,
+  labels = LETTERS[1:3],
+  font.label = list(
+    size = 18,
+    face = "bold",
+    family = "serif"
+  ),
+  #widths = plot_widths,
+  vjust = 1.0,
+  ncol = 3,
+  nrow = 1
+)
+
+## view 
+P_N_con_panel
+```
+
+Then we filter normalise to percentage abundance as we did above (note that we are not filtering or rarefying these sample, as we want to observe the negative influences on the data).
+
+``` {r Section7_NFW_analysis_setup}
+## Normalise the data
+phyloseq_dat_NFW_filter_norm <- transform_sample_counts(phyloseq_dat_NFW, function (x) 100* ((x+1) / sum(x+1)))
+
+## Create data for barplots
+phyloseq_dat_NFW_filter_norm_melt <- psmelt(phyloseq_dat_NFW_filter_norm)
+```
+
+The distribution of taxa at the Genus level is shown below for the NFW samples (note that these data are NOT filtered, as this would remove all samples - so this is based on very low levels of reads). Note that this plot may be influenced by the fact that all taxa had one added to them when normalising to avoid divide by zero errors, so if the read count is low then this plot can be ignored.
+
+``` {r Section7_NFW_barplot_top_genus_normalised_abundance_stacked, fig.height = 8, fig.width = 7}
+genus_dat_NFW <- plot_barplot2("Genus",
+                               phyloseq_dat_NFW_filter_norm_melt,
+                               "negative_control")
+genus_dat_NFW[[1]]
+```
+
+# Section 8: Sensitivity Analysis
+
+In our primary analysis, we included individuals who had self reported to have taken NSAIDS within the last week prior to the 6MSM. We also included individuals who reported gastrointestinal (GI) obstructive disease or GI surgery. NSAIDS are reported to have an effect on the composition of the gut microbiota [paper link here](https://www.sciencedirect.com/science/article/pii/S1198743X15009027?via%3Dihub). GI obstructive disease or surgery are often used as exclusion criteria within human microbiome studies. However, they be putative risk factors given the highlighted role of the GI system  in exertional heat illness aetiology.  As such, we performed sensitivity analysis. We removed individuals who reported NSAID use (n=13) within the last week and individuals who reported GI obstructive disease or GI surgery (n=1) from our cohort. We also excluded the respective pair matched case or control. 13 pairs were removed. The UIN who reported GI disease or GI surgery, also reported NSAID use. Below is a summary of UINs that reported NSAID use and/or GI disease or GI surgery:
+
+``` {r Section8_sen_data}
+## Cohort N prior to removing GI disease/surgery and NSAID users
+sample_ann_summary %>%
+  dplyr::select(UIN, sample_code, Pair, Group) %>%
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(n = n())
+
+## Create data frame which contains NSAID users
+NSAID_users <- sample_ann_summary %>%
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  ## Filter rows where NSAID is "Yes"
+  dplyr::filter(NSAID == "Yes")
+## Show NSAID users
+NSAID_users
+
+## Create data frame which contains individuals with reported GI disease or surgery
+GI_disease <- sample_ann_summary %>%
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  ## Filter rows where NSAID is "Yes"
+  dplyr::filter(GI_disease_surgery == "Yes")
+## Show individuals with reported GI disease or surgery
+GI_disease
+
+## Identify NSAID pairs to be removed
+nsaid_pairs_to_remove <- unique(NSAID_users$Pair)
+## Show pairs to be removed
+nsaid_pairs_to_remove
+## Number of NSAID users
+length(nsaid_pairs_to_remove)
+
+## Identify GI disease/surgery pairs to be removed
+gi_pairs_to_remove <- unique(GI_disease$Pair)
+## Show pairs to be removed
+gi_pairs_to_remove
+## Number of individuals with reported GI disease or surgery
+length(gi_pairs_to_remove)
+
+## Now check for common pairs i.e., are there any pairs which report GI disease/surgery & NSAID use. 
+intersect(nsaid_pairs_to_remove, gi_pairs_to_remove)
+## Now combine the two vectors together with union to return unique values. 
+pairs_to_remove <- union(nsaid_pairs_to_remove, gi_pairs_to_remove)
+## Show pairs to be removed
+pairs_to_remove
+## Number of pairs to be removed
+length(pairs_to_remove)
+```
+
+## Create Phyloseq object
+
+``` {r Section8_sen_create_phyloseq_object}
+## Create a new phyloseq object which removes the 13 pairs (26 UINs) where GI disease or surgery and NSAID use is "Yes"
+## use the filtered phyloseq object from primary analysis which has already been rarefied
+phyloseq_dat_sen_filter <- prune_samples(!(sample_data(phyloseq_dat_filter)$Pair %in% pairs_to_remove), phyloseq_dat_filter)
+## Check that GI_disease_surgery column contains only "No" and positive and negative controls are absent
+unique(sample_data(phyloseq_dat_sen_filter)$GI_disease_surgery)
+## Check that NSAID column contains only "No" and positive and negative controls are absent
+unique(sample_data(phyloseq_dat_sen_filter)$NSAID)
+
+## Create a non-rarefied object for sensitivity DA analysis
+## First, create a new phyloseq object which removes the 13 pairs (26 UINs) where GI disease or surgery and NSAID use is "Yes"
+phyloseq_dat_sen <- prune_samples(!(sample_data(phyloseq_dat)$Pair %in% pairs_to_remove), phyloseq_dat)
+## Now remove any samples with less the 20,000 reads:
+## Check sample sums
+sample_sums_values <- sample_sums(phyloseq_dat_sen)
+## Find samples with sums below 20,000
+samples_below_min_otus <- names(sample_sums_values[sample_sums_values <= min_otus])
+## Print
+print(samples_below_min_otus)
+## Now identify the associated pair to also remove
+filter_pairs_to_remove_sen <- sample_data(phyloseq_dat)$Pair[sample_data(phyloseq_dat)$sample_code %in% samples_below_min_otus]
+## Print
+print(filter_pairs_to_remove_sen)
+## Create a non rarefied phyloseq object with filtered samples (i.e., remove identified samples with < 20,000 reads) for DESeq2 analysis
+phyloseq_dat_sen_deseq <- prune_samples(!(sample_data(phyloseq_dat_sen)$Pair %in% filter_pairs_to_remove), phyloseq_dat_sen)
+```
+
+## Quality Control 
+
+### Summary N for Analysis
+
+Below, a summary of the n taken forward for analysis is provided: 
+
+``` {r Section8_sen_n_summary}
+## N by group for sensitivity analysis
+sample_ann_summary %>%
+  dplyr::select(UIN, sample_code, Pair, Classification, Group, NSAID) %>%  
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  ## Remove NSAID users
+  dplyr::filter(!Pair %in% pairs_to_remove) %>%
+  ## Remove pairs which have ASV count lower than min_otus (< 20,000)
+  dplyr::filter(!Pair %in% filter_pairs_to_remove_sen) %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(n = n())
+
+## Total N removed by NSAID use
+length(pairs_to_remove)
+## Total N removed by having ASV count lower than min_outs (< 20,000)
+length(filter_pairs_to_remove_sen)
+
+## By classification 
+sample_ann_summary %>%
+  dplyr::select(UIN, sample_code, Pair, Classification, Group, NSAID) %>%
+  ## Remove Pos & Neg controls using reg expression
+  dplyr::filter(!grepl(" Control", Group)) %>%
+  ## Remove NSAID users
+  dplyr::filter(!Pair %in% pairs_to_remove) %>%
+  ## Remove pairs which have ASV count lower than min_otus (< 20,000)
+  dplyr::filter(!Pair %in% filter_pairs_to_remove_sen) %>%
+  dplyr::group_by(Classification) %>%
+  dplyr::summarise(n = n())
+
+## check severes
+# sample_ann_summary %>%
+#   filter(Pair %in% c("04","07","12","20","23","68"))
+```
+
+### Taxa count per sample - Rarefied and filtered data
+
+The following plot shows the total number of observed taxa (OTUs or ASVs) per sample after rarefaction and filtering of samples to remove low coverage samples, with the minimum number of taxa specified above (min_otus) highlighted with a dashed line. Samples lower than this will be removed below in Section 2. All samples should have the same depth. If this is not the case, then please debug the code.
+
+``` {r Section8_sen_QC_filterdata_OTU_count, fig.height = 12, fig.width = 10}
+data.frame(sample_data(phyloseq_dat_sen_filter)) %>%
+  dplyr::mutate(count = sample_sums(phyloseq_dat_sen_filter)) %>%
+  ggplot(aes(x = UIN, y = count/1000, fill = Group)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  xlab("") + ylab(paste0("Total Number ", otu_or_asv, "s (x1000)")) +
+  facet_wrap(.~Group, scales = "free_x") +
+  geom_hline(yintercept = min_otus/1000, linetype = 2, linewidth = 1.2) +
+  scale_fill_manual(values = group_cols) +
+  scale_color_manual(values = group_cols) +
+  theme_bw() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 18),
+    axis.text.y  = element_text(size = 12),
+    axis.text.x  = element_text(size = 14, angle = 315, face = "bold", hjust = 0),
+    legend.text  = element_text(size = 14),
+    legend.title = element_text(size = 20, face = "bold"),
+    strip.text.x = element_text(size=20, face = "bold"),
+    strip.text.y = element_text(size=16, face = "bold")
+  )
+```
+
+## Diversity 
+
+### Alpha diversity - Rarefied and filtered data
+
+The following will create a .csv file containing the observed, Chao1 and Shannon Alpha diversity metrics for each sample. Below is the median across each Group level.
+
+```{r Section8_sen_QC_filterdata_alpha_diversity_summary}
+## Create alpha diversity data frame
+adiv_sen <- data.frame(
+  "Pair" = phyloseq::sample_data(phyloseq_dat_sen_filter)$Pair,
+  "UIN" = phyloseq::sample_data(phyloseq_dat_sen_filter)$UIN,
+  "Group" = phyloseq::sample_data(phyloseq_dat_sen_filter)$Group,
+  "Troop" = phyloseq::sample_data(phyloseq_dat_sen_filter)$Troop,
+  "Observed" = phyloseq::estimate_richness(phyloseq_dat_sen_filter, measures = "Observed"),
+  "Chao1" = phyloseq::estimate_richness(phyloseq_dat_sen_filter, measures = "Chao1"),
+  "Shannon" = phyloseq::estimate_richness(phyloseq_dat_sen_filter, measures = "Shannon"),
+  "Simpson" = phyloseq::estimate_richness(phyloseq_dat_sen_filter, measures = "Simpson"))
+
+
+adiv_sen <- adiv_sen %>%
+  ## Remove Chao1 SE column
+  dplyr::select(-Chao1.se.chao1) %>%
+  ## Rename Chao1 column
+  dplyr::rename(Chao1 = Chao1.Chao1) %>%
+  dplyr::arrange(Pair, Group) %>%
+  tibble::remove_rownames()
+
+head(adiv_sen)
+
+## write as csv
+write.table(
+  adiv_sen,
+  paste0(analysis_dir, "/tabs/sensitivity_alpha_diversity_table.csv"),
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE,
+  sep = ","
+)
+``` 
+
+#### Normality
+
+```{r Section8_sen_QC_filterdata_alpha_diversity_normality, echo = TRUE}
+jmv::descriptives(
+    formula = Observed + Chao1 + Shannon + Simpson ~ Group,
+    data = adiv_sen,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+#### t-test
+
+```{r Section8_sen_QC_filterdata_alpha_diversity_comparison_stat, echo = TRUE}
+jmv::ttestIS(
+    formula = Observed + Chao1 + Shannon ~ Group,
+    data = adiv_sen,
+    vars = vars(Observed, Chao1, Shannon),
+    effectSize = TRUE,
+    eqv = TRUE)
+```
+
+non-parametric data:
+
+```{r Section8_sen_QC_filterdata_alpha_diversity_comparison_stat_non_parametric, echo = TRUE}
+jmv::ttestIS(
+    formula = Simpson ~ Group,
+    data = adiv_sen,
+    vars = vars(Simpson),
+    students = FALSE,
+    mann = TRUE,
+    effectSize = TRUE)
+```
+
+#### Plot
+
+The following plot shows a boxplot comparing the alpha diversity between the Group levels (p-values are based in a `r ifelse(test_type == "parametric", "t.test", "wilcox.test")` compared to the '`r control`' level, with ns: p > 0.05; \*: p <= 0.05; \*\*: p <= 0.01; \*\*\*: p <= 0.001; \*\*\*\*: p <= 0.0001). 
+
+```{r Section8_sen_QC_filterdata_alpha_diversity_comparison_plot, fig.height = 8, fig.width = 10}
+## TRUE is normal, FALSE is non-normal distribution 
+metrics_sen_normality <-
+  c(
+    "Observed" = TRUE,
+    "Chao1" = TRUE,
+    "Shannon" = TRUE,
+    "Simpson" = FALSE
+  )
+
+## Add normality information and tidy data frame
+adiv_sen_long <- adiv_sen %>%
+  tidyr::gather(key = "metric",
+                value = "value",
+                c("Observed", "Chao1", "Shannon", "Simpson")) %>%
+  dplyr::mutate(metric = factor(metric, levels = c("Observed", "Chao1", "Shannon", "Simpson")),
+                Normal = metrics_sen_normality[as.character(metric)])
+
+## Function for Normal data: mean SD is in primary analysis section
+## Function for Non-Normal data: median IQR is in primary analysis section
+
+## Plot
+adiv_sen_plot <- adiv_sen_long %>%
+  ggplot(aes(x = Group, y = value)) +
+  geom_jitter(aes(color = Group), 
+              size = 2, 
+              alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")), 
+                     method = "wilcox.test", 
+                     label = "p.signif", 
+                     paired = FALSE, 
+                     family = "serif", 
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  scale_fill_manual(values = group_cols) +
+  scale_color_manual(values = group_cols) +
+  scale_x_discrete(labels = c("Control", "Mod/Sev\nEHI")) +
+  labs(
+    x = "",
+    y = "Alpha Diversity"
+  ) +
+  theme_classic() +
+  theme(text = font,
+        axis.title = element_text(size = 24),
+        axis.text.y = element_text(size = 16),
+        axis.text.x = element_text(size = 16),
+        strip.text = element_text(size=26, face = "bold"),
+        legend.position = "none") +
+  expand_limits(y=0) +
+  stat_summary(data = filter(adiv_sen_long, Normal), 
+               fun = mean, 
+               geom = "point", 
+               color = "black", 
+               size = 3, 
+               show.legend = FALSE) +
+  stat_summary(data = filter(adiv_sen_long, Normal), 
+               fun.data = mean_sd, 
+               geom = "errorbar", 
+               color = "black", 
+               width = 0.3, 
+               linewidth = 0.8, 
+               show.legend = FALSE) +
+  stat_summary(data = filter(adiv_sen_long, !Normal), 
+               fun = median,
+               geom = "crossbar", 
+               color = "black", 
+               width = 0.6, 
+               linewidth = 0.4, 
+               show.legend = FALSE) +
+  stat_summary(data = filter(adiv_sen_long, !Normal), 
+               fun.data = median_iqr, 
+               geom = "errorbar", 
+               color = "black", 
+               width = 0.3, 
+               linewidth = 0.6, 
+               show.legend = FALSE)
+
+adiv_sen_plot
+``` 
+
+### Beta diversity - Rarefied and filtered data
+
+The following principal coordinate analysis (PCoA) plot shows the beta diversity following rarefaction and filtering of samples, based on the Bray Curtis distance between samples. 
+
+``` {r Section8_sen_QC_filterdata_beta_diversity, fig.height = 7, fig.width = 9.5}
+## beta diversity - PCoA
+bdiv_sen_plot <- plot_ordination(phyloseq_dat_sen_filter, 
+                                   ordinate(phyloseq_dat_sen_filter, method = "PCoA", distance = "bray", na.rm = TRUE), 
+                                   type = "samples", 
+                                   color = "Group", 
+                                   #shape = "Rep"
+                                   ) + 
+  stat_ellipse(aes(group = Group), 
+               linetype = 2,
+               linewidth = 1) +
+  geom_point(size = 5,
+             alpha = 0.8) +
+  ggtitle("") + 
+  scale_fill_manual(values = group_cols, labels = c("Control" = "Control", "EHI" = "Mod/Sev\nEHI")) +
+  scale_color_manual(values = group_cols, labels = c("Control" = "Control", "EHI" = "Mod/Sev\nEHI")) +
+  #scale_shape_manual(values = rep_shapes) +
+  theme_classic() +
+  theme(
+    text = font,
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 16),
+    legend.text = element_text(size = 18),
+    legend.title = element_text(size=22, face = "bold"))
+
+## view
+bdiv_sen_plot
+```
+
+### PERMANOVA
+
+This section will use permutational MANOVA (PERMANOVA) to look for significant effects of the Group variable on the abundance. Dissimilarity is again based on the Bray Curtis difference. 
+
+``` {r Section8_sen_PERMANOVA_analysis}
+## Set seed for reproducibility 
+set.seed(0)
+
+## Convert the counts across all samples into a community data matrix
+plot_dat_sen <- psmelt(phyloseq_dat_sen_filter)
+community_mat_sen <- plot_dat_sen %>%
+  dplyr::select(Sample, OTU, Abundance) %>%
+  spread(OTU, Abundance)
+row.names(community_mat_sen) <- community_mat_sen[["Sample"]]
+community_mat_sen <- as.matrix(community_mat_sen[, -1]) ## Remove the Sample column
+
+## Transform the data using square root to minimize influence of most abundant groups
+community_mat_sen <- sqrt(community_mat_sen)
+
+## Create a dissimilarity matrix
+OTU_dist_sen <- vegdist(community_mat_sen, method = "bray")
+
+## Get the matching sample data
+ind_dat_sen <- plot_dat_sen %>%
+  dplyr::select(Sample, Group) %>%
+  distinct()
+ind_dat_sen <- ind_dat_sen[match(rownames(community_mat_sen), ind_dat_sen[["Sample"]]), ]
+
+## Run perMANOVA
+perm_sen <- adonis2(OTU_dist_sen ~ Group, data = ind_dat_sen, permutations = 9999, method = "bray")
+perm_sen
+```
+
+## Microbial Abundance
+
+### Normalise
+
+Here we normalise the taxa counts to represent the percentage of all taxas.
+
+``` {r Section8_sen_normalise}
+phyloseq_dat_sen_filter_norm <- transform_sample_counts(phyloseq_dat_sen_filter, function (x) 100* ((x+1) / sum(x+1)))
+phyloseq_dat_sen_filter_norm_melt <- psmelt(phyloseq_dat_sen_filter_norm)
+
+## melted object of rarefied data
+phyloseq_dat_sen_filter_melt <- psmelt(phyloseq_dat_sen_filter)
+
+## melted object on non-rarefied data
+phyloseq_dat_sen_norm_melt <- psmelt(phyloseq_dat_sen_deseq) 
+```
+
+### Summerise 
+
+``` {r Section8_sen_summarise_taxa}
+## rarefied data: print the number and each unique taxas. Each number total will contain one NA. 
+length(unique(phyloseq_dat_sen_filter_norm_melt$Phylum))
+unique(phyloseq_dat_sen_filter_norm_melt$Phylum)
+length(unique(phyloseq_dat_sen_filter_norm_melt$Class))
+unique(phyloseq_dat_sen_filter_norm_melt$Class)
+length(unique(phyloseq_dat_sen_filter_norm_melt$Order))
+unique(phyloseq_dat_sen_filter_norm_melt$Order)
+length(unique(phyloseq_dat_sen_filter_norm_melt$Family))
+unique(phyloseq_dat_sen_filter_norm_melt$Family)
+length(unique(phyloseq_dat_sen_filter_norm_melt$Genus))
+unique(phyloseq_dat_sen_filter_norm_melt$Genus)
+```
+
+```{r Section8_sen_summarise_taxa_new}
+## Function to calculate distinct counts of taxa for each UIN within Group
+summarise_taxa_sen <- function(data) {
+  data %>%
+    ## Filter by a count >= 1
+    dplyr::filter(Abundance >= 1) %>%
+    ## Group by UIN and Group
+    dplyr::group_by(UIN, Group) %>%
+    # Summarise unique counts of taxa at each taxonomic level
+    dplyr::summarise(
+      Phylum = n_distinct(Phylum, na.rm = TRUE),
+      Class = n_distinct(Class, na.rm = TRUE),
+      Order = n_distinct(Order, na.rm = TRUE),
+      Family = n_distinct(Family, na.rm = TRUE),
+      Genus = n_distinct(Genus, na.rm = TRUE),
+      Species = n_distinct(Species, na.rm = TRUE),
+      ASV = n_distinct(OTU, na.rm = TRUE),
+      ## drop groupings
+      .groups = 'drop'
+    )
+}
+
+## Return results for unique taxa
+summary_taxa_result_sen <- summarise_taxa(phyloseq_dat_sen_filter_melt)
+
+## View the results
+head(summary_taxa_result_sen)
+
+## descriptives with S-W test
+jmv::descriptives(
+    formula = . ~ Group,
+    data = summary_taxa_result_sen,
+    iqr = TRUE,
+    sw = TRUE)
+
+round_half_up <- function(x) {
+  floor(x + 0.5)
+}
+
+## summarise average & variance of taxa for each taxa level, by group
+summary_by_group_sen <- summary_taxa_result_sen %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(
+    ## phyla: median (IQR)
+    median_phyla = median(Phylum, na.rm = FALSE),
+    iqr_phyla = IQR(Phylum, na.rm = FALSE),
+    ## classes: median (IQR)
+    median_classes = median(Class, na.rm = FALSE),
+    iqr_classes = IQR(Class, na.rm = FALSE),
+    ## orders: mean SD
+    mean_orders = mean(Order, na.rm = FALSE),
+    sd_orders = sd(Order, na.rm = FALSE),
+    ## families: mean SD
+    mean_families = mean(Family, na.rm = FALSE),
+    sd_families = sd(Family, na.rm = FALSE),
+    ## genera: mean SD
+    mean_genera = mean(Genus, na.rm = FALSE),
+    sd_genera = sd(Genus, na.rm = FALSE),
+    ## ASV: mean SD
+    mean_ASV = mean(ASV, na.rm = FALSE),
+    sd_ASV = sd(ASV, na.rm = FALSE)
+  ) %>%
+  ## round numbers to 0 decimal places
+  #dplyr::mutate_if(is.numeric, round, digits = 1)
+  #dplyr::mutate(across(where(is.numeric), ~round(.x, digits = 0)))
+  ## round numbers to 0 decimal places, rounding .5 up
+  dplyr::mutate(across(where(is.numeric), round_half_up))
+
+summary_by_group_sen
+
+## Write this into a file
+write.table(
+  summary_by_group_sen,
+  paste0(
+    analysis_dir,
+    "/tabs/sensitivity_taxa_summary_table_by_group.csv"
+  ),
+  row.names = FALSE,
+  col.names = TRUE,
+  sep = ",",
+  quote = FALSE
+)
+```
+
+### Barplot function:
+
+#### Barplot function: Normal text
+
+The following function will plot a barplot showing the normalised abundance across all taxonomic levels with normal text for taxa. 
+
+``` {r Section8_sen_plot_barplot_normal_text}
+## Function for non-italicised taxa names in the legend
+plot_barplot_sen <-
+  function (taxa, plot_dat = phyloseq_dat_sen_filter_norm_melt) {
+    # taxa = "Genus"
+    # plot_dat = phyloseq_dat_sen_filter_norm_melt
+    
+    ## Get the total abundance across all samples for each OTU
+    tmp <- plot_dat %>%
+      dplyr::group_by(OTU) %>%
+      dplyr::summarise(sum = sum(Abundance))
+    tsums <- tmp[["sum"]]
+    names(tsums) <- tmp[["OTU"]]
+    tsums <- tsums[order(names(tsums))]
+    
+    ## Get the OTU taxa
+    tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+    taxlist <- tmp[, taxa]
+    names(taxlist) <- tmp[, "OTU"]
+    
+    ## Check the data match
+    if (length(tsums) != length(taxlist) ||
+        !all(names(tsums) %in% names(taxlist)) ||
+        !all(names(taxlist) %in% names(tsums))) {
+      stop("Error: tsums and taxlist do not match.\n")
+    }
+    taxlist <- taxlist[names(tsums)]
+    
+    ## Keep only the top taxa and add all other taxa into an "other" class
+    taxasum <-
+      sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+    taxasum <- taxasum[!names(taxasum) == ""]
+    plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+    plot_dat[is.na(plot_dat[["TaxName"]]) |
+               plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+    plot_dat[["TaxName"]] <-
+      ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+             as.character(plot_dat[[taxa]]),
+             "Other")
+    plot_dat[["TaxName"]] <-
+      factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+    
+    ## Combine counts at the taxa level
+    plot_dat <- plot_dat %>%
+      dplyr::group_by(Sample, Group, UIN, TaxName) %>%
+      dplyr::summarise(Abundance = sum(Abundance)) %>%
+      ## remove "[]", "-", "_" from taxa names
+      dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+      ## remove leading and trialing spaces!
+      dplyr::mutate(TaxName = trimws(TaxName)) %>%
+      ## remove instances of doubles spaces
+      dplyr::mutate(TaxName = gsub("  ", " ", TaxName))
+    
+    ## Extract unique and edited TaxName values
+    unique_taxa <- unique(plot_dat$TaxName)
+    
+    ## reset factor levels again
+    plot_dat <- plot_dat %>%
+      dplyr::mutate(TaxName = factor(TaxName, levels = unique_taxa))
+    
+    ## Write this into a file
+    write.table(
+      plot_dat,
+      paste0(
+        analysis_dir,
+        "/tabs/sensitivity_individual_abundance_table_",
+        taxa,
+        ".csv"
+      ),
+      row.names = FALSE,
+      col.names = TRUE,
+      sep = ",",
+      quote = FALSE
+    )
+    
+    ## Create a colour pallet for the barplot
+    set.seed(8)
+    cols <-
+      sample(custom_col16, length(unique(plot_dat[["TaxName"]])))
+    names(cols) <- unique(plot_dat[["TaxName"]])
+    cols["Other"] <- "#D3D3D3" ## set other as grey
+    
+    ## Create the plot with the custom legend formatting
+    p <- plot_dat %>%
+      ggplot(aes(x = UIN, y = Abundance, fill = TaxName)) +
+      geom_bar(stat = "identity", width = 1) +
+      labs(x = "",
+           y = "Relative Abundance") +
+      scale_y_continuous(labels = scales::label_percent(scale = 1),
+                         expand = expansion(add = c(0, 1))) +
+      scale_fill_manual(values = cols) +
+      facet_wrap(. ~ Group,
+                 scales = "free_x",
+                 labeller = labeller(Group = c(Control = "Control", EHI = "Mod/Sev EHI"))) +
+      theme_classic() +
+      theme(
+        text = font,
+        axis.title = element_text(size = 18),
+        axis.text.y = element_text(size = 16),
+        axis.text.x = element_blank(),
+        legend.text = element_markdown(size = 14),
+        ## Format legend text as markdown so names are italicised
+        legend.title = element_blank(),
+        strip.text.x = element_text(size = 16, face = "bold"),
+        strip.text.y = element_text(size = 16, face = "bold")
+      )
+    
+    p
+    
+    ## Return the figure and the data set
+    return(list(p, plot_dat))
+  }
+```
+
+#### Barplot function: Italicised Text
+
+The following function will plot a barplot showing the normalised abundance across all taxonomic levels with italicised text for taxa. 
+
+```{r Section8_sen_plot_barplot_italised_text}
+## Function for italicised taxa names in the legend
+plot_barplot_sen2 <-
+  function (taxa, plot_dat = phyloseq_dat_sen_filter_norm_melt) {
+    # taxa = "Genus"
+    # plot_dat = phyloseq_dat_sen_filter_norm_melt
+    
+    ## Get the total abundance across all samples for each OTU
+    tmp <- plot_dat %>%
+      dplyr::group_by(OTU) %>%
+      dplyr::summarise(sum = sum(Abundance))
+    tsums <- tmp[["sum"]]
+    names(tsums) <- tmp[["OTU"]]
+    tsums <- tsums[order(names(tsums))]
+    
+    ## Get the OTU taxa
+    tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+    taxlist <- tmp[, taxa]
+    names(taxlist) <- tmp[, "OTU"]
+    
+    ## Check the data match
+    if (length(tsums) != length(taxlist) ||
+        !all(names(tsums) %in% names(taxlist)) ||
+        !all(names(taxlist) %in% names(tsums))) {
+      stop("Error: tsums and taxlist do not match.\n")
+    }
+    taxlist <- taxlist[names(tsums)]
+    
+    ## Keep only the top taxa and add all other taxa into an "other" class
+    taxasum <-
+      sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+    taxasum <- taxasum[!names(taxasum) == ""]
+    plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+    plot_dat[is.na(plot_dat[["TaxName"]]) |
+               plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+    plot_dat[["TaxName"]] <-
+      ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+             as.character(plot_dat[[taxa]]),
+             "Other")
+    plot_dat[["TaxName"]] <-
+      factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+    
+    ## Combine counts at the taxa level
+    plot_dat <- plot_dat %>%
+      dplyr::group_by(Sample, Group, UIN, TaxName) %>%
+      dplyr::summarise(Abundance = sum(Abundance)) %>%
+      dplyr::mutate(## remove "[]", "-", "_" from taxa names
+        TaxName = gsub("\\[|\\]|-|_", " ", TaxName),
+        ## remove leading and trialing spaces!
+        TaxName = trimws(TaxName)) %>%
+      ## remove instances of doubles spaces
+      dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+      ## Italicising taxa names
+      dplyr::mutate(FormattedTaxName = ifelse(
+        ## keep uncultured as normal text
+        grepl("^uncultured", TaxName),
+        gsub("^(uncultured) (.+)$", "\\1 *\\2*", TaxName),
+        ## Keep the stated names (e.g. "Other") as normal text (i.e. not italicised) and wrap taxa names with "*"
+        ifelse(
+          TaxName %in% c(
+            "Other",
+            "metagenome",
+            "gut metagenome",
+            "human gut",
+            "unidentified"
+          ),
+          TaxName,
+          paste("*", TaxName, "*", sep = "")
+        )
+      )) %>%
+      ## insert line break in long taxa names
+      dplyr::mutate(
+        FormattedTaxName = ifelse(
+          FormattedTaxName == "*Ruminococcus torques group*",
+          "*Ruminococcus<br>torques group*",
+          FormattedTaxName
+        )
+      )
+
+    ## Extract unique and edited TaxName values
+    unique_taxa <- unique(plot_dat$TaxName)
+    unique_taxa2 <- unique(plot_dat$FormattedTaxName)
+    
+    ## reset factor levels again
+    plot_dat <- plot_dat %>%
+      dplyr::mutate(
+        TaxName = factor(TaxName, levels = unique_taxa),
+        FormattedTaxName = factor(FormattedTaxName, levels = unique_taxa2)
+      )
+    
+    ## Write this into a file
+    write.table(
+      plot_dat,
+      paste0(
+        analysis_dir,
+        "/tabs/sensitivity_individual_abundance_table_",
+        taxa,
+        ".csv"
+      ),
+      row.names = FALSE,
+      col.names = TRUE,
+      sep = ",",
+      quote = FALSE
+    )
+    
+    ## Create a colour pallet for the barplot
+    set.seed(8)
+    cols <-
+      sample(custom_col16, length(unique(plot_dat[["FormattedTaxName"]])))
+    names(cols) <- unique(plot_dat[["FormattedTaxName"]])
+    cols["Other"] <- "#D3D3D3" ## set other as grey
+    
+    ## Create the plot with the custom legend formatting
+    p <- plot_dat %>%
+      ggplot(aes(x = UIN, y = Abundance, fill = FormattedTaxName)) +
+      geom_bar(stat = "identity", width = 1) +
+      labs(x = "",
+           y = "Relative Abundance") +
+      scale_y_continuous(labels = scales::label_percent(scale = 1),
+                         expand = expansion(add = c(0, 1))) +
+      scale_fill_manual(values = cols) +
+      facet_wrap(. ~ Group,
+                 scales = "free_x",
+                 labeller = labeller(Group = c(Control = "Control", EHI = "Mod/Sev EHI"))) +
+      theme_classic() +
+      theme(
+        text = font,
+        axis.title = element_text(size = 18),
+        axis.text.y = element_text(size = 16),
+        axis.text.x = element_blank(),
+        legend.text = element_markdown(size = 14),
+        ## Format legend text as markdown so names are italicised
+        legend.title = element_blank(),
+        strip.text.x = element_text(size = 16, face = "bold"),
+        strip.text.y = element_text(size = 16, face = "bold")
+      )
+    
+    p
+    
+    ## Return the figure and the data set
+    return(list(p, plot_dat))
+}
+```
+
+#### Phylum
+``` {r Section8_sen_barplot_top_phylum_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+phylum_dat_sen <- plot_barplot_sen("Phylum")
+phylum_sen_p <- phylum_dat_sen[[1]]
+phylum_sen_p
+```
+
+#### Class
+``` {r Section8_sen_barplot_top_class_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+class_dat_sen <- plot_barplot_sen("Class")
+class_dat_sen[[1]]
+```
+
+#### Order
+``` {r Section8_sen_barplot_top_order_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+order_dat_sen <- plot_barplot_sen("Order")
+order_dat_sen[[1]]
+```
+
+#### Family
+``` {r Section8_sen_barplot_top_family_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+family_dat_sen <- plot_barplot_sen2("Family")
+family_dat_sen[[1]]
+```
+
+#### Genus
+``` {r Section8_sen_barplot_top_genus_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+genus_dat_sen <- plot_barplot_sen2("Genus")
+genus_sen_p <- genus_dat_sen[[1]]
+genus_sen_p
+```
+
+#### Species
+``` {r Section8_sen_barplot_top_species_normalised_abundance_stacked, fig.height = 8, fig.width = 8}
+species_dat_sen <- plot_barplot_sen2("Species")
+species_dat_sen[[1]]
+```
+
+### Firmicute/Bacteroidota ratio
+
+This section will calculate the Firmicutes/Bacteroidota (FB) ratio, which is often used as a measure of gut microbiome dysregulation. 
+
+```{r Section8_sen_calculate_FBratio}
+fbratio_sen <- phylum_dat_sen[[2]] %>%
+  dplyr::group_by(UIN) %>%
+  tidyr::spread(TaxName, Abundance) %>%
+  dplyr::mutate(FBratio = Firmicutes/Bacteroidota) %>%
+  dplyr::select(UIN, Group, Firmicutes, Bacteroidota, FBratio)
+
+head(fbratio_sen)
+
+## Write as csv
+write.table(
+  fbratio_sen,
+  paste0(analysis_dir, "/tabs/sensitivity_FBratio_table.csv"),
+  row.names = FALSE,
+  col.names = TRUE,
+  sep = ",",
+  quote = FALSE
+)
+```
+
+#### Normality
+
+```{r Section8_sen_FBratio_normality}
+jmv::descriptives(
+    formula = FBratio ~ Group,
+    data = fbratio_sen,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+#### t-test
+
+```{r Section8_sen_FBratio_comparison_stat}
+jmv::ttestIS(
+    formula = FBratio ~ Group,
+    data = fbratio_sen,
+    vars = FBratio,
+    students = FALSE,
+    mann = TRUE,
+    effectSize = TRUE)
+```
+
+#### Plot
+
+Below is a boxplot showing how the FB Ratio differs between groups.
+
+``` {r Section8_sen_FBratio_plot, fig.height = 6, fig.width = 6}
+## plot figure
+fbratio_sen_plot <- fbratio_sen %>% 
+  ggplot(aes(x = Group, y = FBratio)) +
+  geom_boxplot(outlier.color = NA,
+               size = 1) +
+  geom_jitter(aes(color = Group),
+              size = 2,
+              alpha = 0.6) +
+  labs(x = "", 
+       y = "F/B Ratio") +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "wilcox.test",
+                     label = "p.signif",
+                     paired = FALSE,
+                     family = "serif",
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  scale_x_discrete(labels = c("Control", "Mod/Sev EHI")) +
+  scale_y_continuous(breaks = seq(0, 10, 2), 
+                     limits = c(0, 10)) +
+  scale_color_manual(values = group_cols) +
+  theme_classic() +
+  theme(
+    text = font,
+    axis.title   = element_text(size = 24),
+    axis.text.y  = element_text(size = 16),
+    axis.text.x  = element_text(size = 16),
+    legend.position = "none"
+    ) 
+
+## view
+fbratio_sen_plot
+```
+
+## Abundance Comparison All Taxa Function
+
+Below, we will compare all taxa, at each taxonomic level between groups. 
+
+``` {r Section8_sen_abundance_comparison_function}
+## Function for non-italicised taxa names
+compare_abundance_comparison_sen <-
+  function (taxa,
+            plot_dat = phyloseq_dat_sen_filter_norm_melt,
+            p_type = "individual") {
+    # taxa = "Phylum"
+    # plot_dat = phyloseq_dat_sen_filter_norm_melt
+    # p_type = "individual"
+    
+    ## Get the total abundance across all samples for each OTU for the given taxa
+    tmp <- plot_dat %>%
+      dplyr::group_by(OTU) %>%
+      dplyr::summarise(sum = sum(Abundance))
+    tsums <- tmp[["sum"]]
+    names(tsums) <- tmp[["OTU"]]
+    tsums <- tsums[order(names(tsums))]
+    
+    ## Get the OTU taxa
+    tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+    taxlist <- tmp[, taxa]
+    names(taxlist) <- tmp[, "OTU"]
+    
+    ## Check the data match
+    if (length(tsums) != length(taxlist) ||
+        !all(names(tsums) %in% names(taxlist)) ||
+        !all(names(taxlist) %in% names(tsums))) {
+      stop("Error: tsums and taxlist do not match.\n")
+    }
+    taxlist <- taxlist[names(tsums)]
+    
+    ## Keep only the top taxa and add all other taxa into an "other" class
+    taxasum <-
+      sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+    taxasum <- taxasum[!names(taxasum) == ""]
+    plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+    plot_dat[["TaxName"]] <- factor(plot_dat[[taxa]])
+    
+    ## Combine counts at the taxa level
+    plot_dat <- plot_dat %>%
+      dplyr::group_by(Pair, UIN, Group, Troop, TaxName) %>%
+      dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+      dplyr::filter(TaxName != "Other")
+    
+    ## create separate wide data frame for all taxa of each individual UIN
+    UIN_taxa_wide <- plot_dat
+    UIN_taxa_wide <- UIN_taxa_wide %>%
+      tidyr::pivot_wider(names_from = TaxName,
+                         values_from = Abundance) %>%
+      ## arrange by Pair and Group
+      dplyr::arrange(Pair, Group)
+    
+    ## save as .csv file
+    write.table(
+      UIN_taxa_wide,
+      paste0(
+        analysis_dir,
+        "/tabs/sensitivity_individual_relative_abundance_",
+        taxa,
+        ".csv"
+      ),
+      sep = ",",
+      row.names = FALSE,
+      col.names = TRUE,
+      quote = FALSE
+    )
+    
+    ## Combine at the Group level
+    plot_dat_SE <- plot_dat %>%
+      dplyr::group_by(Group, TaxName) %>%
+      dplyr::summarise(
+        average = ifelse(
+          test_type == "parametric",
+          mean(Abundance),
+          median(Abundance)
+        ),
+        variability = ifelse(
+          test_type == "parametric",
+          sd(Abundance) / sqrt(length(Abundance)),
+          IQR(Abundance)
+        )
+      )
+    
+    ## Calculate p-value across all groups
+    pval <-
+      data.frame(TaxName       = levels(plot_dat_SE[["TaxName"]]),
+                 pval          = NA)
+    for (t in pval[["TaxName"]]) {
+      if (test_type == "parametric") {
+        pval[pval[["TaxName"]] == t, "pval"] <-
+          anova(lm(Abundance ~ Group, data = subset(plot_dat, TaxName == t)))[1, "Pr(>F)"]
+      } else if (test_type == "non-parametric") {
+        pval[pval[["TaxName"]] == t, "pval"] <-
+          kruskal.test(Abundance ~ Group, data = subset(plot_dat, TaxName == t))[["p.value"]]
+      }
+    }
+    
+    ## Calculate individual p-values vs control
+    for (t in pval[["TaxName"]]) {
+      for (g in unique(plot_dat[["Group"]])) {
+        if (g == "Control") {
+          pval[pval[["TaxName"]] == t, paste0("pval.", g)] <- 1
+        } else if (test_type == "parametric") {
+          pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+            t.test(
+              subset(plot_dat, TaxName == t &
+                       Group == g)[["Abundance"]],
+              subset(plot_dat, TaxName == t &
+                       Group == control)[["Abundance"]]
+            )[["p.value"]]
+        } else if (test_type == "non-parametric") {
+          pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+            wilcox.test(
+              subset(plot_dat, TaxName == t &
+                       Group == g)[["Abundance"]],
+              subset(plot_dat, TaxName == t &
+                       Group == control)[["Abundance"]]
+            )[["p.value"]]
+        }
+      }
+    }
+    
+    ## Add to data frame
+    plot_dat_SE[["pval"]] <- NA
+    for (t in pval[["TaxName"]]) {
+      for (g in unique(plot_dat[["Group"]])) {
+        if (p_type == "combine") {
+          if (g == control) {
+            plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                          plot_dat_SE[["Group"]] == g, "pval"] <-
+              pval[pval[["TaxName"]] == t, "pval"]
+          } else {
+            plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                          plot_dat_SE[["Group"]] == g, "pval"] <- NA
+          }
+        } else if (p_type == "individual") {
+          if (g == control) {
+            plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                          plot_dat_SE[["Group"]] == g, "pval"] <- NA
+          } else {
+            plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                          plot_dat_SE[["Group"]] == g, "pval"] <-
+              pval[pval[["TaxName"]] == t, paste0("pval.", g)]
+          }
+        }
+      }
+    }
+    
+    ## Correct for multiple testing
+    which_nonna <- which(!is.na(plot_dat_SE[["pval"]]))
+    plot_dat_SE[["padj"]] <- NA
+    plot_dat_SE[which_nonna, "padj"] <-
+      p.adjust(as.numeric(plot_dat_SE[which_nonna,][["pval"]]),
+               method = "fdr",
+               n = nrow(plot_dat_SE[which_nonna,]))
+    
+    ## Convert to star format
+    plot_dat_SE[["padj_star"]] <-
+      case_when(
+        plot_dat_SE[["padj"]] <= 0.001 ~ "***",
+        plot_dat_SE[["padj"]] <= 0.01  ~ "**",
+        plot_dat_SE[["padj"]] <= 0.05  ~ "*",
+        TRUE ~ ""
+      )
+    
+    ## Save the values
+    write.table(
+      plot_dat_SE,
+      paste0(
+        analysis_dir,
+        "/tabs/sensitivity_abundance_comparison_table_",
+        taxa,
+        ".csv"
+      ),
+      sep = ",",
+      row.names = FALSE,
+      col.names = TRUE,
+      quote = FALSE
+    )
+    
+    ## format table
+    plot_dat_format <- plot_dat_SE %>%
+      tidyr::pivot_wider(
+        names_from = Group,
+        values_from = c(average, variability, pval, padj, padj_star)
+      ) %>%
+      dplyr::mutate(
+        average_Control = sprintf("%.1f", average_Control),
+        variability_Control = sprintf("%.1f", variability_Control),
+        average_EHI = sprintf("%.1f", average_EHI),
+        variability_EHI = sprintf("%.1f", variability_EHI),
+        Control = paste0(average_Control, " (", variability_Control, ")"),
+        EHI = paste0(average_EHI, " (", variability_EHI, ")")
+      ) %>%
+      dplyr::rename(pval = pval_EHI,
+                    padj = padj_EHI,
+                    Taxa = TaxName) %>%
+      dplyr::mutate(pval = sprintf("%.3f", as.numeric(pval)),
+                    padj = sprintf("%.3f", as.numeric(padj))) %>%
+      dplyr::select(Taxa, Control, EHI, pval, padj)
+    
+    ## save formatted table
+    write.table(
+      plot_dat_format,
+      paste0(
+        analysis_dir,
+        "/tabs/sensitivity_abundance_comparison_table_formatted_",
+        taxa,
+        ".csv"
+      ),
+      sep = ",",
+      row.names = FALSE,
+      col.names = TRUE,
+      quote = FALSE
+    )
+    
+    return(plot_dat_format)
+  }
+```
+
+### Phylum
+
+```{r Section8_sen_abundance_comparison_Phylum}
+phylum_comparison_sen <- compare_abundance_comparison_sen("Phylum")
+phylum_comparison_sen
+
+## filter by pval
+phylum_comparison_sen %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+phylum_comparison_sen %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Class
+
+```{r Section8_sen_abundance_comparison_Class}
+class_comparison_sen <- compare_abundance_comparison_sen("Class")
+class_comparison_sen
+
+## filter by pval
+class_comparison_sen %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+class_comparison_sen %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Order
+
+```{r Section8_sen_abundance_comparison_Order}
+order_comparison_sen <- compare_abundance_comparison_sen("Order")
+order_comparison_sen
+
+## filter by pval
+order_comparison_sen %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+order_comparison_sen %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Family
+
+```{r Section8_sen_abundance_comparison_Family}
+family_comparison_sen <- compare_abundance_comparison_sen("Family")
+family_comparison_sen
+
+## filter by pval
+family_comparison_sen %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+family_comparison_sen %>%
+  dplyr::filter(padj < 0.05)
+```
+
+### Genus
+
+```{r Section8_sen_abundance_comparison_Genus}
+genus_comparison_sen <- compare_abundance_comparison_sen("Genus")
+genus_comparison_sen
+
+## filter by pval
+genus_comparison_sen %>%
+  dplyr::filter(pval < 0.05)
+
+## filter by padj
+genus_comparison_sen %>%
+  dplyr::filter(padj < 0.05)
+```
+
+## Plot Abundance Comparison Function: 
+
+### Abundance Comparison Function: Normal Text
+
+The following function will plot the difference between the groups at different taxonomic levels with normal text for taxa:
+
+``` {r Section8_sen_plot_abundance_comparison_normal_text}
+## Function for non-italicised taxa names
+plot_abundance_comparison_sen <- function (taxa,
+                                           plot_dat = phyloseq_dat_sen_filter_norm_melt,
+                                           p_type = "individual",
+                                           nclass = 15) {
+  # taxa = "Genus"
+  # plot_dat = phyloseq_dat_sen_filter_norm_melt
+  # p_type = "individual"
+  
+  ## Get the total abundance across all samples for each OTU for the given taxa
+  tmp <- plot_dat %>%
+    dplyr::group_by(OTU) %>%
+    dplyr::summarise(sum = sum(Abundance))
+  tsums <- tmp[["sum"]]
+  names(tsums) <- tmp[["OTU"]]
+  tsums <- tsums[order(names(tsums))]
+  
+  ## Get the OTU taxa
+  tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+  taxlist <- tmp[, taxa]
+  names(taxlist) <- tmp[, "OTU"]
+  
+  ## Check the data match
+  if (length(tsums) != length(taxlist) ||
+      !all(names(tsums) %in% names(taxlist)) ||
+      !all(names(taxlist) %in% names(tsums))) {
+    stop("Error: tsums and taxlist do not match.\n")
+  }
+  taxlist <- taxlist[names(tsums)]
+  
+  ## Keep only the top taxa and add all other taxa into an "other" class
+  taxasum <-
+    sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+  taxasum <- taxasum[!names(taxasum) == ""]
+  plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+  plot_dat[is.na(plot_dat[["TaxName"]]) |
+             plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+  plot_dat[["TaxName"]] <-
+    ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+           as.character(plot_dat[[taxa]]),
+           "Other")
+  plot_dat[["TaxName"]] <-
+    factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+  
+  ## Combine counts at the taxa level
+  plot_dat <- plot_dat %>%
+    dplyr::group_by(UIN, Group, TaxName) %>%
+    dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+    dplyr::filter(TaxName != "Other")
+  
+  ## Combine at the Group level
+  plot_dat_SE <- plot_dat %>%
+    dplyr::group_by(Group, TaxName) %>%
+    dplyr::summarise(
+      average = ifelse(
+        test_type == "parametric",
+        mean(Abundance),
+        median(Abundance)
+      ),
+      variability = ifelse(
+        test_type == "parametric",
+        sd(Abundance) / sqrt(length(Abundance)),
+        IQR(Abundance)
+      )
+    )
+  
+  ## Calculate p-value across all groups
+  pval <-
+    data.frame(TaxName       = head(levels(plot_dat_SE[["TaxName"]]),-1),
+               pval          = NA)
+  for (t in pval[["TaxName"]]) {
+    if (test_type == "parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        anova(lm(Abundance ~ Group, data = subset(plot_dat, TaxName == t)))[1, "Pr(>F)"]
+    } else if (test_type == "non-parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        kruskal.test(Abundance ~ Group, data = subset(plot_dat, TaxName == t))[["p.value"]]
+    }
+  }
+  
+  ## Calculate individual p-values vs control
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (g == "Control") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <- 1
+      } else if (test_type == "parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          t.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      } else if (test_type == "non-parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          wilcox.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      }
+    }
+  }
+  
+  ## Add to data frame
+  plot_dat_SE[["pval"]] <- NA
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (p_type == "combine") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, "pval"]
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        }
+      } else if (p_type == "individual") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, paste0("pval.", g)]
+        }
+      }
+    }
+  }
+  
+  ## Correct for multiple testing
+  which_nonna <- which(!is.na(plot_dat_SE[["pval"]]))
+  plot_dat_SE[["pval_adj"]] <- NA
+  plot_dat_SE[which_nonna, "pval_adj"] <-
+    p.adjust(as.numeric(plot_dat_SE[which_nonna,][["pval"]]),
+             method = "fdr",
+             n = nrow(plot_dat_SE[which_nonna,]))
+  
+  ## Convert to star format
+  plot_dat_SE[["pval_adj_star"]] <-
+    case_when(
+      plot_dat_SE[["pval_adj"]] <= 0.001 ~ "***",
+      plot_dat_SE[["pval_adj"]] <= 0.01  ~ "**",
+      plot_dat_SE[["pval_adj"]] <= 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  
+  ## Save the values
+  write.table(
+    plot_dat_SE,
+    paste0(
+      analysis_dir,
+      "/tabs/sensitivity_plot_abundance_comparison_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  ## Plot the data
+
+  ## Determine x-axis limits
+  x_max <-
+    max(plot_dat$Abundance, na.rm = TRUE) * 1.02 ## Extend by 2%
+  
+  ## box plots
+  p2 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(TaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_boxplot(
+      width = 0.6,
+      position = position_dodge(0.8),
+      outlier.size = 1,
+      outlier.alpha = 0.8
+    ) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  ## boxplot with individual data points
+  p3 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(TaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_jitter(
+      ## colour jitter by group but flip factors to match fill global aesthetic
+      aes(colour = factor(Group, levels = c("EHI", "Control"))),
+      ## set jitter width and keep dodge consistent
+      position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+      size = 1.2,
+      alpha = 0.6,
+      show.legend = FALSE,
+    ) +
+    geom_boxplot(width = 0.6,
+                 position = position_dodge(0.8),
+                 ## remove outlier dots as we have jitter points
+                 outlier.shape = NA) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  list(
+    BoxPlot = p2,
+    JitterBoxPlot = p3
+    )
+ 
+} 
+```
+
+### Abundance Comparison Function: Italicised Text
+
+The following function will plot the difference between the groups at different taxonomic levels with italicised text for taxa:
+
+```{r Section8_sen_plot_abundance_comparison_italised_text}
+## Function for italicised taxa names
+plot_abundance_comparison_sen2 <- function (taxa,
+                                            plot_dat = phyloseq_dat_sen_filter_norm_melt,
+                                            p_type = "individual",
+                                            nclass = 15) {
+  # taxa = "Genus"
+  # plot_dat = phyloseq_dat_sen_filter_norm_melt
+  # p_type = "individual"
+  
+  ## Get the total abundance across all samples for each OTU for the given taxa
+  tmp <- plot_dat %>%
+    dplyr::group_by(OTU) %>%
+    dplyr::summarise(sum = sum(Abundance))
+  tsums <- tmp[["sum"]]
+  names(tsums) <- tmp[["OTU"]]
+  tsums <- tsums[order(names(tsums))]
+  
+  ## Get the OTU taxa
+  tmp <- subset(plot_dat, Sample == plot_dat[1, "Sample"])
+  taxlist <- tmp[, taxa]
+  names(taxlist) <- tmp[, "OTU"]
+  
+  ## Check the data match
+  if (length(tsums) != length(taxlist) ||
+      !all(names(tsums) %in% names(taxlist)) ||
+      !all(names(taxlist) %in% names(tsums))) {
+    stop("Error: tsums and taxlist do not match.\n")
+  }
+  taxlist <- taxlist[names(tsums)]
+  
+  ## Keep only the top taxa and add all other taxa into an "other" class
+  taxasum <-
+    sort(tapply(tsums, taxlist, sum, na.rm = TRUE), decreasing = TRUE)
+  taxasum <- taxasum[!names(taxasum) == ""]
+  plot_dat[["TaxName"]] <- as.character(plot_dat[[taxa]])
+  plot_dat[is.na(plot_dat[["TaxName"]]) |
+             plot_dat[["TaxName"]] == "", "TaxName"] <- "Other"
+  plot_dat[["TaxName"]] <-
+    ifelse(plot_dat[["TaxName"]] %in% names(taxasum)[1:nclass],
+           as.character(plot_dat[[taxa]]),
+           "Other")
+  plot_dat[["TaxName"]] <-
+    factor(plot_dat[["TaxName"]], levels = c(names(taxasum)[1:nclass], "Other"))
+  
+  ## Combine counts at the taxa level
+  plot_dat <- plot_dat %>%
+    dplyr::group_by(UIN, Group, TaxName) %>%
+    dplyr::summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+    dplyr::filter(TaxName != "Other")
+  
+  ## Combine at the Group level
+  plot_dat_SE <- plot_dat %>%
+    dplyr::group_by(Group, TaxName) %>%
+    dplyr::summarise(
+      average = ifelse(
+        test_type == "parametric",
+        mean(Abundance),
+        median(Abundance)
+      ),
+      variability = ifelse(
+        test_type == "parametric",
+        sd(Abundance) / sqrt(length(Abundance)),
+        IQR(Abundance)
+      )
+    )
+  
+  ## Calculate p-value across all groups
+  pval <-
+    data.frame(TaxName       = head(levels(plot_dat_SE[["TaxName"]]),-1),
+               pval          = NA)
+  for (t in pval[["TaxName"]]) {
+    if (test_type == "parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        anova(lm(Abundance ~ Group, data = subset(plot_dat, TaxName == t)))[1, "Pr(>F)"]
+    } else if (test_type == "non-parametric") {
+      pval[pval[["TaxName"]] == t, "pval"] <-
+        kruskal.test(Abundance ~ Group, data = subset(plot_dat, TaxName == t))[["p.value"]]
+    }
+  }
+  
+  ## Calculate individual p-values vs control
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (g == "Control") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <- 1
+      } else if (test_type == "parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          t.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      } else if (test_type == "non-parametric") {
+        pval[pval[["TaxName"]] == t, paste0("pval.", g)] <-
+          wilcox.test(
+            subset(plot_dat, TaxName == t &
+                     Group == g)[["Abundance"]],
+            subset(plot_dat, TaxName == t &
+                     Group == control)[["Abundance"]]
+          )[["p.value"]]
+      }
+    }
+  }
+  
+  ## Add to data frame
+  plot_dat_SE[["pval"]] <- NA
+  for (t in pval[["TaxName"]]) {
+    for (g in unique(plot_dat[["Group"]])) {
+      if (p_type == "combine") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, "pval"]
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        }
+      } else if (p_type == "individual") {
+        if (g == control) {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <- NA
+        } else {
+          plot_dat_SE[plot_dat_SE[["TaxName"]] == t &
+                        plot_dat_SE[["Group"]] == g, "pval"] <-
+            pval[pval[["TaxName"]] == t, paste0("pval.", g)]
+        }
+      }
+    }
+  }
+  
+  ## Correct for multiple testing
+  which_nonna <- which(!is.na(plot_dat_SE[["pval"]]))
+  plot_dat_SE[["pval_adj"]] <- NA
+  plot_dat_SE[which_nonna, "pval_adj"] <-
+    p.adjust(as.numeric(plot_dat_SE[which_nonna,][["pval"]]),
+             method = "fdr",
+             n = nrow(plot_dat_SE[which_nonna,]))
+  
+  ## Convert to star format
+  plot_dat_SE[["pval_adj_star"]] <-
+    case_when(
+      plot_dat_SE[["pval_adj"]] <= 0.001 ~ "***",
+      plot_dat_SE[["pval_adj"]] <= 0.01  ~ "**",
+      plot_dat_SE[["pval_adj"]] <= 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  
+  ## Save the values
+  write.table(
+    plot_dat_SE,
+    paste0(
+      analysis_dir,
+      "/tabs/sensitivity_plot_abundance_comparison_",
+      taxa,
+      ".csv"
+    ),
+    sep = ",",
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE
+  )
+  
+  ## Plot the data
+
+  ## Determine x-axis limits
+  x_max <-
+    max(plot_dat$Abundance, na.rm = TRUE) * 1.02 ## Extend by 2%
+  
+  ## box plots
+  p2 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    dplyr::mutate(
+      FormattedTaxName = ifelse(TaxName != "Other", paste("*", TaxName, "*", sep = ""), TaxName),
+      FormattedTaxName = ifelse(
+        FormattedTaxName == "*Eubacterium hallii group*",
+        "*Eubacterium<br>hallii group*",
+        FormattedTaxName
+      )
+    ) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(FormattedTaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_boxplot(
+      width = 0.6,
+      position = position_dodge(0.8),
+      outlier.size = 1,
+      outlier.alpha = 0.8
+    ) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  ## boxplot with individual data points
+  p3 <- plot_dat %>%
+    ## remove "[]", "-", "_" from taxa names
+    dplyr::mutate(TaxName = gsub("\\[|\\]|-|_", " ", TaxName)) %>%
+    ## remove leading and trialing spaces!
+    dplyr::mutate(TaxName = trimws(TaxName)) %>%
+    ## remove instances of double spaces
+    dplyr::mutate(TaxName = gsub("  ", " ", TaxName)) %>%
+    dplyr::mutate(
+      FormattedTaxName = ifelse(TaxName != "Other", paste("*", TaxName, "*", sep = ""), TaxName),
+      FormattedTaxName = ifelse(
+        FormattedTaxName == "*Eubacterium hallii group*",
+        "*Eubacterium<br>hallii group*",
+        FormattedTaxName
+      )
+    ) %>%
+    ggplot(aes(
+      x = Abundance,
+      y = reorder(FormattedTaxName, Abundance),
+      ## flip group order
+      fill = factor(Group, levels = c("EHI", "Control"))
+    )) +
+    geom_jitter(
+      ## colour jitter by group but flip factors to match fill global aesthetic
+      aes(colour = factor(Group, levels = c("EHI", "Control"))),
+      ## set jitter width and keep dodge consistent
+      position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+      size = 1.2,
+      alpha = 0.6,
+      show.legend = FALSE,
+    ) +
+    geom_boxplot(width = 0.6,
+                 position = position_dodge(0.8),
+                 ## remove outlier dots as we have jitter points
+                 outlier.shape = NA) +
+    labs(x = "Relative Abundance",
+         y = "",
+         ## legend label
+         fill = "Group") +
+    scale_y_discrete(expand = c(0, 0.5)) +
+    scale_x_continuous(
+      labels = scales::label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = c(0, 0)
+    ) +
+    ## group colour for boxplot
+    scale_fill_manual(values = group_cols) +
+    ## group colour for jitter
+    scale_color_manual(values = group_cols) +
+    ## flip legend order so control above EHI
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title.x = element_text(size = 18),
+      axis.text.x = element_text(size = 16),
+      axis.text.y = element_markdown(size = 16, colour = "black"),
+      legend.title = element_text(size = 22),
+      legend.text  = element_text(size = 18),
+      panel.grid.major.x = element_line(colour = "darkgrey", linewidth = 0.25)
+    )
+  
+  list(
+    BoxPlot = p2,
+    JitterBoxPlot = p3
+    )
+
+}
+```
+
+### Phylum
+``` {r Section8_sen_plot_abundance_comparison_phylum, fig.height = 5, fig.width = 7}
+plot_abundance_comparison_sen("Phylum", nclass = 6)
+
+phylum_abund_group_sen <- plot_abundance_comparison_sen("Phylum", nclass = 6)
+phylum_abund_group_sen_p <- phylum_abund_group_sen$JitterBoxPlot
+```
+
+### Class
+``` {r Section8_sen_plot_abundance_comparison_class, fig.height = 5, fig.width = 7}
+plot_abundance_comparison_sen("Class")
+```
+
+### Order
+``` {r Section8_sen_plot_abundance_comparison_order, fig.height = 5, fig.width = 7}
+plot_abundance_comparison_sen("Order")
+```
+
+### Family
+``` {r Section8_sen_plot_abundance_comparison_family, fig.height = 5, fig.width = 7}
+plot_abundance_comparison_sen2("Family")
+```
+
+### Genus
+``` {r Section8_sen_plot_abundance_comparison_genus, fig.height = 5, fig.width = 7}
+plot_abundance_comparison_sen("Genus")
+
+genus_abund_group_sen <- plot_abundance_comparison_sen("Genus")
+genus_abund_group_sen_p <- genus_abund_group_sen$JitterBoxPlot
+```
+
+## Differential Abundance Analysis
+
+### DESeq2
+
+In this section, we will use the [DESeq2](https://bioconductor.org/packages/release/bioc/html/DESeq2.html) package in R to identify differentially abundant bacterial species at the OTU level between the conditions. 
+
+
+#### Setup
+
+``` {r Section8_sen_DESeq2_analysis_setup}
+## Perform the differential expression analysis
+## Run DESeq2 on non-rarefied feature table
+deseq_dat_sen <- phyloseq_dat_sen_deseq
+## plot the abundance non-rarefied feature table
+deseq_plot_sen <- phyloseq_dat_sen_norm_melt 
+```
+
+#### Model
+
+``` {r Section8_sen_DESeq2_model_1, cache = TRUE}
+## create DESeq2 object from phyloseq object
+dds_model1 <- phyloseq_to_deseq2(deseq_dat_sen, design = ~ Group) 
+
+## Pre-filtering
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds_model1) >= 10) >= smallestGroupSize
+dds_model1 <- dds_model1[keep,]
+
+## estimation of size factors was set to use ‘poscounts’, which calculates a modified relative log expression that helps account for features missing in at least one sample
+dds_model1 <- DESeq(dds_model1, test = "Wald", fitType = "parametric", sfType = "poscounts")
+
+## Plot deseq2 object
+plotDispEsts(dds_model1)
+## coefficients DESeq estimated:
+resultsNames(dds_model1)
+
+## sum all deviance values and na.rm set as TRUE to ignore NAs
+dds_model1_dev <- sum(mcols(dds_model1)$deviance, na.rm = TRUE)
+dds_model1_dev
+
+## results
+res_model1 <- results(dds_model1, 
+                      contrast = c("Group", "EHI", "Control"), 
+                      tidy = TRUE, 
+                      format = "DataFrame")
+
+rownames(res_model1) <- res_model1$row
+
+res_model1 <- res_model1[,-1]
+
+## summary 
+summary(res_model1)
+
+length(res_model1$padj)
+```
+
+#### Functions
+
+Below are a number of functions that will generate results and plots for the various Group comparisons that will be made.
+
+```{r Section8_sen_DESeq2_analysis_functions}
+## Function to take the results from a specific contrast from DESeq2 and return a significance table
+signif_OTU_sen <- function (diff_OTU) {
+  diff_OTU <- subset(diff_OTU, !is.na(padj) & padj <= 0.05 & abs(log2FoldChange) >= 1)
+  if(nrow(diff_OTU) == 0) return(NULL)
+  diff_OTU <- cbind(as(diff_OTU, "data.frame"), as(tax_table(deseq_dat_sen)[rownames(diff_OTU), ], "matrix"))
+  diff_OTU <- diff_OTU[order(diff_OTU[["padj"]], decreasing = FALSE),]
+  diff_OTU[["OTU"]] <- rownames(diff_OTU)
+  diff_OTU[["OTU_num"]] <- 1:nrow(diff_OTU)
+  return(diff_OTU)
+}
+
+## Function to plot a specific OTU
+plot_OTU_sen <- function (otu) {
+    ggplot(subset(deseq_plot_sen, OTU == otu),
+           aes(x = Group, y = Abundance, fill = Group)) +
+    geom_boxplot() + 
+    ggtitle(paste(c(otu, as.character(unlist(subset(deseq_plot, OTU == otu)[1, c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")]))), collapse = "; ")) + 
+    labs(x = "", y = "Relative Abundance") +
+    scale_fill_manual(values = group_cols) +
+    scale_y_continuous(labels = scales::label_percent(scale = 1)) +
+    theme(
+      text = font,
+      plot.title = element_text(size = 8),
+      axis.title   = element_text(size = 18),
+      axis.text.y  = element_text(size = 16),
+      axis.text.x  = element_text(angle = 90, hjust = 1, size = 24),
+      legend.text  = element_text(size = 22),
+      legend.title = element_text(size = 22, face = "bold")
+      )
+}
+
+## Function to process a specific comparison
+diff_out_sen <- function (i, j, plot = TRUE) {
+  
+    ## Get the significant OTUs
+    if (i == j) {
+      cat ("Error: ", i, " and ", j, " must be different\n")
+      return (NULL)
+    }
+    ## dds_model1 used for ~Group design
+    all_OTU <- results(dds_model1, contrast = c("Group", i, j)) 
+    diff_OTU <- signif_OTU_sen(all_OTU)
+    if(is.null(diff_OTU)) {
+      cat ("Error: No significant differences identified for ", i, " vs ", j, "\n")
+      return (list("All"    = all_OTU,
+                   "Signif" = NULL,
+                   "Up"     = NULL,
+                   "Down"   = NULL))
+    }
+    
+    ## Save the results
+    write.table(diff_OTU, paste0(analysis_dir, "/tabs/Sensitivity_DESeq2_SIGNIF_OTUs_", i, "_vs_", j, "_log2foldchange.csv"),
+                row.names = FALSE, col.names = TRUE, sep = ",", quote = FALSE)
+    
+    ## Plot the data for these OTUs
+    if (plot) {
+      outdir <- paste0(analysis_dir, "/figs/Sensitivity_SIGNIF_OTUs2_", i, "_vs_", j, "/")
+      if(file.exists(outdir)) {
+        unlink(outdir, recursive = TRUE)
+        dir.create(outdir)
+      }
+      for (k in diff_OTU[["OTU_num"]]) {
+        otu <- rownames(diff_OTU)[k]
+        ggsave(filename = paste0(outdir, "OTU_", k, "_", otu, ".png"), 
+               plot = plot_OTU(otu), 
+               height = 6, width = 8, unit = "in", dpi = 300)
+      }
+    }
+    
+    ## Return the results
+    return (list("All"    = all_OTU,
+                 "Signif" = diff_OTU,
+                 "Up"     = subset(diff_OTU, log2FoldChange > 0),
+                 "Down"   = subset(diff_OTU, log2FoldChange < 0)))
+}
+
+## Function to plot a volcano plot for the results using ggplot2
+plot_volcano_sen <- function(x) {
+  if (length(x) == 0) return(NULL)
+  
+  # Create a data frame for plotting
+  plot_dat <- x[["All"]]
+  plot_col <- rep("black", nrow(plot_dat))
+  which_down <- which(rownames(plot_dat) %in% rownames(x[["Down"]]))
+  which_up <- which(rownames(plot_dat) %in% rownames(x[["Up"]]))
+  plot_col[which_down] <- "blue"
+  plot_col[which_up] <- "red"
+  plot_dat_df <- data.frame(
+    log2FoldChange = plot_dat$log2FoldChange,
+    padj = plot_dat$padj,
+    plot_col = factor(plot_col)
+  )
+  
+  # Create the volcano plot using ggplot2
+  p <- ggplot(data = plot_dat_df, aes(x = log2FoldChange, y = -log10(padj), color = plot_col)) +
+    geom_point(size = 3,
+               #shape = 1,
+               alpha = 0.3) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = log2(2), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = -log2(2), linetype = "dashed", color = "black") +
+    scale_color_manual(values = c("black", "blue", "red")) +
+    labs(x = "log2(Fold Change)", y = "-log10(P Value)") +
+    # scale_x_continuous(breaks = seq(-6, 6, 2)) +
+    theme_classic() +
+    theme(
+      text = font,
+      legend.position = "none",
+      plot.title = element_text(size = 12),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 16),
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 12, face = "bold"))
+    
+  
+  return(p)
+}
+
+#### modified below:
+plot_volcano2_sen <- function(x) {
+  if (length(x) == 0) return(NULL)
+  
+  ## Create a data frame for plotting
+  plot_dat <- x[["All"]]
+  which_down <- which(rownames(plot_dat) %in% rownames(x[["Down"]]))
+  which_up <- which(rownames(plot_dat) %in% rownames(x[["Up"]]))
+  plot_col <- rep("black", nrow(plot_dat))
+  plot_col[which_down] <- "blue"
+  plot_col[which_up] <- "red"
+  
+  plot_dat_df <- data.frame(
+    log2FoldChange = plot_dat$log2FoldChange,
+    padj = plot_dat$padj,
+    plot_col = factor(plot_col),
+    label = rownames(plot_dat)  ## Use rownames for labels to annotate plot
+  )
+  
+  ## Create the volcano plot using ggplot2
+  p <- ggplot(data = plot_dat_df, aes(x = log2FoldChange, y = -log10(padj), color = plot_col)) +
+    geom_point(size = 3, alpha = 0.3) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = log2(2), linetype = "dashed", color = "black") +
+    geom_vline(xintercept = -log2(2), linetype = "dashed", color = "black") +
+    scale_color_manual(values = c("black", "blue", "red")) +
+    labs(x = "log2(Fold Change)", y = "-log10(P Value)") +
+    theme_classic() +
+    theme(
+      text = font,
+      legend.position = "none",
+      plot.title = element_text(size = 12),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 16),
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 12, face = "bold")
+    ) +
+    ## Use ggrepel for text repelling, only for OTUs with -log10(padj) > 0.05
+    geom_text_repel(
+      data = plot_dat_df[which_down | which_up, ],
+      aes(label = ifelse(-log10(padj) > 0.05, as.character(label), "")), 
+      box.padding = 0.5,
+      point.padding = 0.1,
+      segment.size = 0.2,
+      vjust = 1.5,
+      hjust = 0,
+      size = 3
+    )
+  
+  return(p)
+}
+
+## Function to get the top hits from the DESeq2 analysis
+get_top_hits_sen <- function(x, n = 10) {
+  if (length(x) == 0) return()
+  
+  # Get the top up and downregulated hits
+  positive_df <- head(x[["Up"]][order(x[["Up"]][["log2FoldChange"]], decreasing = TRUE), ], min(n, nrow(x[["Up"]])))
+  negative_df <- tail(x[["Down"]][order(x[["Down"]][["log2FoldChange"]], decreasing = TRUE), ], min(n, nrow(x[["Down"]])))
+  df <- rbind.data.frame(positive_df, negative_df)
+  df[["Direction"]] <- c(rep("Increase", min(n, nrow(x[["Up"]]))), rep("Decrease", min(n, nrow(x[["Down"]]))))
+  
+  df[["Taxa"]] <- factor(paste(otu_or_asv, df[["OTU_num"]], ": ", df[["Genus"]], sep = ""), 
+                                 levels = paste(otu_or_asv, df[["OTU_num"]], ": ", df[["Genus"]], sep = ""))
+  
+  # Create a bar plot using the log2FoldChange values and updated sample names, with colored bars
+  df %>%
+    ggplot(aes(x = Taxa, y = log2FoldChange, fill = Direction)) +
+    geom_bar(stat='identity') +
+    coord_flip() +
+    scale_fill_manual(values = c('Increase' = "#117744", 'Decrease' = "#DC3220")) +
+    ylab("log2 (Fold Change)") + xlab("") +
+    # scale_y_continuous(breaks = seq(-6, 6, 2)) +
+    theme_classic() +
+    theme(
+      text = font,
+      axis.title   = element_text(size = 14),
+      axis.text.y  = element_text(size = 16, face = "bold"),
+      axis.text.x  = element_text(size = 14),
+      legend.position = "none",
+      panel.grid.major.x = element_line(colour = "lightgrey", linewidth = 0.25))   
+}
+```
+
+
+#### Results
+The following results show the differentially abundant taxa between the Patient and Control samples. 
+
+``` {r Section8_sen_DESeq2_analysis_cases_vs_control}
+DE_EHIvC_sen <- diff_out("EHI", "Control", plot = FALSE)
+cat("Total number of differentially abundant OTUs: ", nrow(DE_EHIvC_sen[["Signif"]]))
+cat("Upregulated number of differentially abundant OTUs: ", nrow(DE_EHIvC_sen[["Up"]]))
+cat("Downregulated number of differentially abundant OTUs: ", nrow(DE_EHIvC_sen[["Down"]]))
+```
+
+#### Volcano
+
+Below is a volcano plot showing the overall differential abundance results for this comparison.
+
+``` {r Section8_sen_DESeq2_analysis_cases_vs_control_volcano, fig.height = 5, fig.width = 7}
+volcano_p_sen <- plot_volcano_sen(DE_EHIvC_sen)
+volcano_p_sen
+```
+
+volcano plot with sig ASVs highlighted
+
+``` {r Section8_sen_DESeq2_analysis_cases_vs_control_volcano2, fig.height = 5, fig.width = 7}
+volcano_p_sen <- plot_volcano2_sen(DE_EHIvC_sen)
+volcano_p_sen
+```
+
+### ALDEx2
+
+#### Setup
+
+```{r Section8_sen_ALDEx2_setup}
+## create ASV_table from phyloseq object
+ASV_table_sen = otu_table(phyloseq_dat_sen_deseq)
+
+## create groupings variable from phyloseq object
+groupings_sen = phyloseq_dat_sen_deseq %>%
+  sample_data() %>%
+  .$Group %>%
+  ## make groupings a character vector! 
+  as.character()
+
+ncol(ASV_table_sen)
+length(groupings_sen)
+```
+
+#### Model
+
+```{r Section8_sen_ALDEx2_model, cache = TRUE}
+results_sen <- aldex(reads = ASV_table_sen, 
+                     conditions = groupings_sen, 
+                     mc.samples = 128, 
+                     test="t", 
+                     effect=TRUE,
+                     include.sample.summary = TRUE, 
+                     CI = TRUE,
+                     verbose = TRUE, 
+                     denom="all")
+```
+
+#### Results
+
+```{r Section8_sen_ALDEx2_results}
+## Expected p-value of Wilcoxon rank test
+results_sen %>%
+  dplyr::filter(we.eBH < 0.05)
+
+## Expected Benjamini-Hochberg corrected p-value of Wilcoxon test
+results_sen %>%
+  dplyr::filter(wi.eBH < 0.05)
+```
+
+### ANCOMBC
+
+#### Setup
+
+https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOM.html
+
+```{r Section8_sen_ANCOMBC_setup}
+## object to use
+phyloseq_dat_sen_deseq 
+## make a copy for ancom analysis
+ancom_phyloseq_sen = phyloseq_dat_sen_deseq
+## Set Group variable as character string 
+sample_data(ancom_phyloseq_sen)$Group <- as.character(sample_data(ancom_phyloseq_sen)$Group)
+## Check that levels are now NULL
+levels(sample_data(ancom_phyloseq_sen)$Group)
+## Make sure names are still "Control" and "EHI"
+unique(sample_data(ancom_phyloseq_sen)$Group)
+```
+
+#### Model
+
+```{r Section8_sen_ANCOMBC_model}
+## use ANCOMBC with phyloseq object
+out_sen = ancombc(data = NULL, 
+                  assay_name = NULL,
+                  tax_level = NULL, 
+                  phyloseq = phyloseq_dat_sen_deseq,
+                  formula = "Group",
+                  p_adj_method = "BH", 
+                  prv_cut = 0.10, 
+                  lib_cut = min_otus,
+                  group = "Group", 
+                  struc_zero = TRUE, 
+                  neg_lb = TRUE,
+                  tol = 1e-5, 
+                  max_iter = 100, 
+                  conserve = FALSE,
+                  alpha = 0.05, 
+                  global = TRUE, 
+                  n_cl = 1, 
+                  verbose = TRUE)
+```
+
+#### Results
+
+```{r Section8_sen_ANCOMBC_results}
+## Result from the ANCOM-BC log-linear model to determine taxa that are differentially abundant according to the covariate of interest. It contains: 1) log fold changes; 2) standard errors; 3) test statistics; 4) p-values; 5) adjusted p-values; 6) indicators whether the taxon is differentially abundant (TRUE) or not (FALSE).
+res_sen = out_sen$res
+
+## Set Colnames
+col_names = c("Taxon", "Intercept", "Group")
+
+## 1) log fold changes
+res_lfc_sen = res_sen$lfc
+colnames(res_lfc_sen) = col_names
+#res_lfc
+## 2) standard errors
+res_se_sen = res_sen$se
+colnames(res_se_sen) = col_names
+#res_se
+## 3) test statistics
+res_w_sen = res_sen$W
+colnames(res_w_sen) = col_names
+#res_w
+## 4) p-values
+res_p_sen = res_sen$p_val
+colnames(res_p_sen) = col_names
+#res_p
+## 5) adjusted p-values
+res_padj_sen = res_sen$q_val
+colnames(res_padj_sen) = col_names
+#res_padj
+## 6) indicators whether the taxon is differentially abundant (TRUE) or not (FALSE).
+res_da_sen = res_sen$diff_abn
+colnames(res_da_sen) = col_names
+#res_da
+## check if we have TRUE
+unique(res_da_sen$Group)
+```
+
+```{r Section8_sen_ANCOM_save_results}
+## Create list of ANCOM results
+ancom_res_list_sen <- list(
+  "Log_Fold_Change" = res_lfc_sen,
+  "Standard_Errors" = res_se_sen,
+  "Test_Statistics" = res_w_sen,
+  "p_value" = res_p_sen,
+  "BH_Adjusted_p_value" = res_padj_sen,
+  "Dif_Abun_T_or_F" = res_da_sen
+)
+
+## Save ANCOM results into a single workbook
+openxlsx::write.xlsx(ancom_res_list_sen,
+                     file = paste0(analysis_dir, "/tabs/Sensitivity_ANCOM_results.xlsx"))
+```
+
+### Compare Methods
+
+```{r Section8_sen_compare}
+## DESeq2 results to use
+deseq_res_sen = DE_EHIvC_sen$Signif
+## set rownames as a new colmun called Taxon
+deseq_res_sen = rownames_to_column(deseq_res_sen, var = "Taxon")
+## count number of sig ASVs using nrow()
+nrow(deseq_res_sen)
+## Select only Taxon column
+deseq_res_sen = deseq_res_sen %>%
+  dplyr::select(Taxon)
+
+## ALDEx2 results to use
+aldex2_res_sen = results_sen
+## set rownames as a new colmun called Taxon
+aldex2_res_sen = rownames_to_column(aldex2_res_sen, var = "Taxon")
+## Filter for only p adjust < 0.05
+aldex2_res_sen = results %>%
+  dplyr::filter(wi.eBH < 0.05)
+## count number of sig ASVs using nrow()
+nrow(aldex2_res_sen)
+## As we have 0 hits, we will create an empty vector for venn diagram
+aldex2_hits_sen = character(nrow(aldex2_res_sen))
+
+## ANCOMBC results, filter for only p adjust < 0.05
+ancombc_res_sen = res_padj_sen %>%
+  dplyr::filter(Group < 0.05)
+## count number of sig ASVs using nrow()
+nrow(ancombc_res_sen)
+## Select only Taxon column
+ancombc_res_sen = ancombc_res_sen %>%
+  dplyr::select(Taxon)
+
+## Prepare the a list for venn diagram plotting.
+da_list_sen <- list(
+  DESeq2 = deseq_res_sen$Taxon,
+  ALDEx2 = aldex2_hits_sen,  
+  "ANCOM-BC" = ancombc_res_sen$Taxon
+)
+```
+
+#### Venn Diagram
+
+```{r Section8_sen_compare_venn_test, fig.height = 5, fig.width = 5}
+## Change font, code from https://stackoverflow.com/questions/69699950/r-geom-venn-how-to-change-font
+venn_font <- function(p, font)
+{
+
+  grep_grob <- function(gt, lab){
+    which(sapply(gt, function(x) grepl(lab, x$name)))
+  }
+  
+  p2 <- ggplot_gtable(ggplot_build(p))
+  mygrobs <- p2$grobs
+  panel_grob <- mygrobs[[grep_grob(mygrobs, "panel")]]
+  venn_grob <- panel_grob$children[[grep_grob(panel_grob$children, "venn")]]
+  text_grob <- venn_grob$children[grep_grob(venn_grob$children, "text")]
+  text_grob <- do.call(grid::gList, 
+                       lapply(text_grob, 
+                              function(x) {x$gp$fontfamily <- font; 
+                                           x}))
+  venn_grob$children[grep_grob(venn_grob$children, "text")] <- text_grob
+  panel_grob$children[[grep_grob(panel_grob$children, "venn")]] <- venn_grob
+  mygrobs[[grep_grob(mygrobs, "panel")]] <- panel_grob
+  p2$grobs <- mygrobs
+  grid::grid.newpage()
+  grid::grid.draw(p2)
+  
+}
+
+## Combine all taxa into a single vector and make it unique
+venn_all_taxa_sen <- unique(unlist(da_list_sen))
+
+## Create a data frame where each row is a unique taxa
+venn_df_sen <- data.frame(Taxon = venn_all_taxa_sen)
+
+## For each method, create a column in taxa_df indicating presence or absence of each taxon
+for(method in names(da_list_sen)) {
+  venn_df_sen[[method]] <- venn_df_sen$Taxon %in% da_list_sen[[method]]
+}
+
+## view
+venn_df_sen
+
+## create venn diagram
+p_sen <- ggplot(venn_df_sen) +
+  geom_venn(aes(A = DESeq2, B = `ALDEx2`, C = `ANCOM-BC`),
+            #fill_color = c("#a40000", "#0000ff", "#008000"),
+            fill_color = c("#E69F00", "#56B4E9", "green")
+            ) +
+  coord_fixed() + 
+  theme_void() 
+
+## use custom function to set font as serif
+venn_font(p_sen, font = "serif")
+```
+
+# Session Info
+``` {r sessionInfo}
+sinfo <- sessionInfo()
+sinfo
+save.image(paste0(analysis_dir, "/prospective_analysis_manuscript_16S_modsev.Rout"))
+```
