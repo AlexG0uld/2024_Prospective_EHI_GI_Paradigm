@@ -12,7 +12,7 @@ Folder/file description:
 
 **biomarkers**/*prospective_analysis_manuscript_biomarkers_gh.Rmd*: R markdown script used to analyse biomarkers for exertional heat illness cases vs. matched controls.  
 
-**biomarkers_modsev**/*prospective_analysis_manuscript_biomarkers_modsev_gh.Rms*:  R markdown script used to analyse biomarkers for only the moderate and severe exertional heat illness cases vs. matched controls.
+**biomarkers_modsev**/*prospective_analysis_manuscript_biomarkers_modsev_gh.Rmd*:  R markdown script used to analyse biomarkers for only the moderate and severe exertional heat illness cases vs. matched controls.
 
 **characteristics**/*prospective_analysis_manuscript_characteristics_gh.Rmd*: R markdown script used to analyse participant characteristics.  
 
