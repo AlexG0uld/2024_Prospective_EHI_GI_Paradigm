@@ -1,0 +1,403 @@
+---
+title: "Participant characteristics (manuscript)"
+author: "Alex Gould"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    latex_engine: xelatex
+  rmarkdown::pdf_document:
+    extra_dependencies: float
+    toc: yes
+html_document:
+  toc: yes
+toc_float: yes
+---
+
+# Setup
+First let us set up the R environment:
+
+## Global options
+
+```{r global options, include = TRUE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      error = FALSE,
+                      eval = TRUE,
+                      dev = c('pdf', 'png'),
+                      width = 60,
+                      fig.align = 'center',
+                      fig.height = 10,
+                      fig.width = 10,
+                      fig.dpi = 300,
+                      fig.pos = "!H",
+                      dpi = 300,
+                      out.extra = "",
+                      message = FALSE,
+                      cache = FALSE,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figs/rmd/')
+```
+
+## Library
+
+```{r setup}
+## Load the libraries
+library(xlsx)
+library(rstudioapi)
+library(tidyverse)
+library(jmv)
+library(ggtext)
+library(ggpubr)
+library(scales)
+```
+
+## Parameters
+
+```{r directory}
+data_dir          = '...'
+analysis_dir      = '...'
+pw_message        = "..."
+font              = element_text(family = "serif")
+group_col         = c(
+  "Control"       = "#1B9E77",
+  "Mild"          = "#DDDD77" ,
+  "Moderate"      = "#D95F02",
+  "Severe"        = "#771122"
+  )
+```
+
+### Figure Parameters
+
+```{r figure_theme}
+## create custom theme
+theme_ag <- function(){
+
+  theme_classic() %+replace%
+    
+    theme(
+      text = font,
+      axis.text.y  = element_text(size = 12, margin = margin(r = 3), colour = "black"),
+      axis.title.y = element_text(size = 16, angle = 90, vjust = 2),
+      axis.text.x  = element_text(size = 16, margin = margin(r = 3), colour = "black"),
+      axis.title.x = element_blank(),
+      legend.title = element_text(size = 16),
+      legend.text = element_text(size = 14)
+    )
+}
+```
+
+Now, make custom axis titles to use throughout:
+
+```{r figure_custom_y_axis}
+tgi_axis = expression(paste("Peak ", italic("T")*""[gi] ~ "(\u00b0C)"))
+qcs_axis = "QCS score"
+```
+
+Fix for `stat_compare_means()` function to allow Times New Roman font. Thank you: https://stackoverflow.com/questions/77346644/stat-compare-means-unable-to-change-font-family-when-using-comparisons-argu 
+
+```{r stat_compare_means_fix}
+fixed_call <- quote(ggsignif::geom_signif(comparisons = comparisons,
+                                          y_position = label.y,
+                                          test = method, test.args = method.args,
+                                          step_increase = step.increase,
+                                          size = bracket.size, textsize = 6, color = color,
+                                          map_signif_level = map_signif_level,
+                                          tip_length = tip.length, data = data,
+                                          vjust = vjust, ...))
+
+scm <- as.list(ggpubr::stat_compare_means)
+scm[[26]][[2]][[3]][[13]] <- fixed_call
+stat_compare_means <- function(...) {
+  ggp <- getNamespace('ggpubr')
+  .method_info <- ggp$.method_info
+  .add_item <- ggp$.add_item
+  .is_p.signif_in_mapping <- ggp$.is_p.signif_in_mapping
+  .is_empty <- ggp$.is_empty
+  do.call(as.function(scm), list(...), quote = FALSE)
+}
+```
+
+## Load Data
+
+Next we load in the data:
+
+```{r load_data}
+## load data here... 
+```
+
+# Matched Cohort Characteristics
+
+## Control vs EHI
+
+### Descriptives
+
+```{r descriptives_case_anthro}
+jmv::descriptives(
+    formula = Age + Height + Mass + BMI ~ case,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+```{r descriptives_case_bsa}
+jmv::descriptives(
+    formula = BSA + BSA_M ~ case,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+```{r descriptives_case_fitness_temp}
+jmv::descriptives(
+    formula = RMFT_s + PT_rank + BFT_s + Tcore ~ case,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+```{r descriptives_qcs}
+jmv::descriptives(
+    formula = QCS ~ case,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r parametric_Case}
+jmv::ttestIS(
+    formula = Mass + BMI + BSA_M + RMFT_s + BFT_s ~ case,
+    data = dat_casecon,
+    vars = vars(Mass, BMI, BSA_M, RMFT_s, BFT_s),
+    effectSize = TRUE,
+    norm = TRUE,
+    eqv = TRUE)
+```
+
+non-parametric data:
+
+```{r non-parametric_Case}
+jmv::ttestIS(
+    formula = Age + Height + BSA + PT_rank + Tcore + QCS ~ case,
+    data = dat_casecon,
+    vars = vars(Age, Height, BSA, PT_rank, Tcore, QCS),
+    effectSize = TRUE,
+    students = FALSE,
+    mann = TRUE)
+```
+
+## Moderate and Severes Combined
+
+### Descriptives
+
+```{r descriptives_modsev_anthro}
+jmv::descriptives(
+    formula = Age + Height + Mass + BMI ~ modsev,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+```{r descriptives_modsev_bsa}
+jmv::descriptives(
+    formula = BSA + BSA_M ~ modsev,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+```{r descriptives_modsev_fitness_temp}
+jmv::descriptives(
+    formula = RMFT_s + PT_rank + BFT_s + Tcore ~ modsev,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+```{r descriptives_modsev_qcs}
+jmv::descriptives(
+    formula = QCS ~ modsev,
+    data = dat_casecon,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r parametric_modsev}
+jmv::ttestIS(
+    formula = Height + Mass + BMI + BSA + BSA_M + BFT_s ~ modsev,
+    data = dat_casecon,
+    vars = vars(Height, Mass, BMI, BSA, BSA_M, BFT_s),
+    effectSize = TRUE,
+    norm = TRUE,
+    eqv = TRUE)
+```
+
+non-parametric data:
+
+```{r non-parametric_modsev}
+jmv::ttestIS(
+    formula = Age + RMFT_s + PT_rank + Tcore + QCS ~ modsev,
+    data = dat_casecon,
+    vars = vars(Age, RMFT_s, PT_rank, Tcore, QCS),
+    effectSize = TRUE,
+    students = FALSE,
+    mann = TRUE)
+```
+
+### Tgi ModSev vs Mild cases
+
+Below, compare the Tgi of ModSev vs. mild EHI cases.
+
+```{r modsev_vs_mild_cases}
+## create df of only mild cases
+mild_cases <- dat_casecon %>% 
+  dplyr::select(Pair, UIN, Troop, classification2, Tcore) %>% 
+  dplyr::filter(classification2 == "Mild") %>%
+  ## create new column called Group
+  dplyr::mutate(Group = "Mild") %>% 
+  dplyr::select(-classification2)
+
+## create df of only modsev cases
+modsev_cases <- dat_casecon %>% 
+  dplyr::select(Pair, UIN, Troop, modsev, Tcore) %>% 
+  dplyr::filter(modsev == "EHI") %>% 
+  ## create new column called Group
+  dplyr::mutate(Group = "EHI") %>% 
+  dplyr::select(-modsev)
+
+## combine the two dfs
+mild_modsev <- dplyr::bind_rows(mild_cases, modsev_cases)
+
+## descriptives
+jmv::descriptives(
+    formula = Tcore ~ Group,
+    data = mild_modsev,
+    iqr = TRUE,
+    skew = TRUE,
+    kurt = TRUE,
+    sw = TRUE)
+
+## t-test (Mann-Whitney U)
+jmv::ttestIS(
+    formula = Tcore ~ Group,
+    data = mild_modsev,
+    vars = Tcore,
+    students = FALSE,
+    mann = TRUE)
+```
+
+# Figure
+
+First, create a data frame to use for figure plotting.
+
+```{r fig_dataframe}
+dat <- dat_casecon %>%
+  dplyr::select(case, classification2, Tcore, modsev) %>%
+  dplyr::mutate(classification2 = case_when(
+    classification2 %in% c("Mild Control", 
+                           "Moderate Control", 
+                           "Severe Control") ~ "Control",
+    TRUE ~ classification2)) %>%
+  dplyr::rename(Classification = classification2) %>%
+  dplyr::mutate(Classification = factor(Classification, levels = c("Control", 
+                                                                   "Mild",
+                                                                   "Moderate",
+                                                                   "Severe"))) 
+```
+
+How many controls have a Tcore > 40°C? 0
+
+```{r}
+dat %>%
+  dplyr::select(case, Tcore) %>%
+  dplyr::filter(case == "Control") %>%
+  dplyr::filter(Tcore > 40)
+```
+
+How many mild EHIs have a Tcore > 40°C? 5
+
+```{r}
+dat %>%
+  dplyr::select(Classification, Tcore) %>%
+  dplyr::filter(Classification == "Mild") %>%
+  dplyr::filter(Tcore > 40)
+```
+
+How many severe EHIs have a Tcore < 40°C? 1
+
+```{r}
+dat %>%
+  dplyr::select(Classification, Tcore) %>%
+  dplyr::filter(Classification == "Severe") %>%
+  dplyr::filter(Tcore < 40)
+```
+
+## Peak Gastrointestinal Temperature
+
+```{r fig_peak_gi_temp, fig.height = 5, fig.width = 7}
+set.seed(123)
+Tcore_case_p <- 
+  dat %>%
+  ggplot(aes(x = case, y = Tcore)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(aes(color = Classification), 
+              width = 0.3,
+              alpha = 0.6,
+              size = 2
+              ) +
+  labs(x = "Group",
+       y = tgi_axis) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_y_continuous(breaks = seq(37, 43, 1), 
+                     limits = c(37, 43),
+                     labels = scales::label_number(accuracy = 0.1)) +
+  scale_color_manual(values = group_col,
+                     labels = c("Non-EHI", "Mild", "Moderate", "Severe")) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "wilcox.test",
+                     label = "p.signif",
+                     family = "serif",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag()
+
+## view
+Tcore_case_p
+
+ggsave(
+  filename = paste0(analysis_dir, "figs/ggsave_peak_tgi_figure", ".png"),
+  plot = Tcore_case_p,
+  height = 5,
+  width = 7,
+  unit = "in",
+  dpi = 600
+)
+
+ggsave(
+  filename = paste0(analysis_dir, "figs/ggsave_peak_tgi_figure", ".jpeg"),
+  plot = Tcore_case_p,
+  height = 5,
+  width = 7,
+  unit = "in",
+  dpi = 600
+)
+```
+
+# Session info
+
+``` {r sessionInfo}
+sinfo <- sessionInfo()
+sinfo
+save.image(paste0(analysis_dir, "/prospective_analysis_manuscript_characteristics.Rout"))
+```
