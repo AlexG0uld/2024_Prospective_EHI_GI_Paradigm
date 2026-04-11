@@ -1,0 +1,1138 @@
+---
+title: "Biomarkers Analysis (manuscript)"
+author: "Alex Gould"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    latex_engine: xelatex
+  rmarkdown::pdf_document:
+    extra_dependencies: float
+    toc: yes
+html_document:
+  toc: yes
+toc_float: yes
+---
+
+# Setup
+
+First let us set up the R environment:
+
+## Global options
+
+```{r global options, include = TRUE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE,
+                      error = FALSE,
+                      eval = TRUE,
+                      dev = c('pdf', 'png'),
+                      width = 60,
+                      fig.align = 'center', 
+                      fig.height = 10, 
+                      fig.width = 10, 
+                      fig.dpi = 300,
+                      fig.pos = "!H",
+                      dpi = 300,
+                      out.extra = "",
+                      message = FALSE, 
+                      cache = FALSE,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figs/rmd/') 
+```
+
+## Library 
+
+```{r Library}
+## Load the libraries
+library(xlsx)
+library(rstudioapi)
+library(tidyverse)
+library(jmv)
+library(ggtext)
+library(ggpubr)
+library(gridtext) 
+library(scales)
+```
+
+## Parameters
+
+``` {r Parameters}
+analysis_dir = "..."
+data_dir     = "..."
+data_dir2    = "..."
+pw_message   = "..."
+font         = element_text(family = "sans")
+group_cols   = c("Control" = "#0099CC", 
+                 "EHI"     = "#FF9900")
+```
+
+### Figure parameters 
+
+First, create custom theme to use throughout:
+
+```{r figure_theme}
+#create custom theme
+theme_ag <- function(){
+
+  theme_classic() %+replace%
+    
+    theme(
+      text = font,
+      axis.text.y  = element_text(size = 12, margin = margin(r = 3)),
+      axis.title.y = element_text(size = 16, angle = 90, vjust = 2),
+      axis.text.x  = element_text(size = 16, margin = margin(r = 3)),
+      axis.title.x = element_blank(),
+      legend.position = "none"
+    )
+}
+```
+
+Now, make custom axis titles to use throughout:
+
+```{r figure_custom_y_axis}
+IFABP_axis = expression("Serum [I-FABP]" ~ "(pg·" * mL^-1 * ")")
+CLDN3_axis = expression("Plasma [CLDN-3]" ~ "(ng·" * mL^-1 * ")")
+Zon_axis   = expression("Serum [Zonulin]" ~ "(ng·" * mL^-1 * ")")
+LBP_axis   = expression("Plasma [LBP]" ~ "(µg·" * mL^-1 * ")")
+sCD14_axis  = expression("Plasma [sCD14]" ~ "(µg·" * mL^-1 * ")")
+```
+
+## Load Data
+Next we load in the data:
+
+``` {r load_data}
+## load data here...
+```
+
+### Data Filtering
+
+Check cohort numbers:
+
+```{r cohort_numbers}
+## Cohort number
+length(unique(data$UIN))
+
+## Number per group (i.e. control/EHI)
+length(unique(data$Pair))
+
+table(data$Case)
+```
+
+Now remove the three troops that we did not take blood from.
+
+```{r remove_troops}
+## data filtering here...
+```
+
+Total Ns for analysis:  
+SERUM: 65 per group (control/EHI)  
+EDTA: 64 per group (control/EHI)  
+  
+Create two separate data frames from raw data, 1 for serum bloods and 1 for EDTA bloods. 
+
+```{r data_serum}
+## data filtering here...
+```
+
+```{r data_EDTA}
+## data filtering here...
+```
+
+# Cases vs Controls
+
+This section will analyse the blood biomarkers of EHI cases vs their pair matched controls. The N is presented in the descriptive section of each biomarker. 
+
+## Intestinal Fatty Acid Binding Protein
+
+### Descriptives
+
+```{r IFABP_descriptives_case}
+jmv::descriptives(
+    formula = IFABP ~ Case,
+    data = data_serum,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+non-parametric data:
+
+```{r IFABP_non-parametric_case}
+jmv::ttestIS(
+    formula = IFABP ~ Case,
+    data = data_serum,
+    vars = IFABP,
+    students = FALSE,
+    mann = TRUE,
+    norm = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+IFABP figure with log10 y axis. 
+
+``` {r IFABP_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+## with p value
+pval <- "italic(P) == 0.885"
+y_bracket_ifabp <- 150000
+
+IFABP_case_p <- 
+  ggplot(data_serum, aes(x = Case, y = IFABP)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) +
+  stat_summary(fun = median,
+               geom="crossbar",
+               color="black",
+               width = 0.6,
+               size = 0.6,
+               show.legend = FALSE) +
+  stat_summary(fun.data = median_iqr,
+               geom="errorbar",
+               color="black",
+               width = 0.3,
+               size = 0.8,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = IFABP_axis) +
+  scale_y_log10(labels = scales::label_number(big.mark = ",")) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  geom_segment(aes(x = 1, xend = 2, y = y_bracket_ifabp, yend = y_bracket_ifabp), inherit.aes = FALSE) +
+  geom_segment(aes(x = 1, xend = 1, y = y_bracket_ifabp, yend = y_bracket_ifabp / 1.2), inherit.aes = FALSE) +
+  geom_segment(aes(x = 2, xend = 2, y = y_bracket_ifabp, yend = y_bracket_ifabp / 1.2), inherit.aes = FALSE) +
+  annotate("text", 
+           x = 1.5, 
+           y = y_bracket_ifabp * 1.2, 
+           label = pval, 
+           parse = TRUE, 
+           size = 4, 
+           family = "sans") +
+  theme_ag()
+
+#view figure
+IFABP_case_p
+```
+
+Isolate "outliers" that have a concentration greater than 10,000 pg/mL. 
+
+```{r IFABP_check_outliers}
+## data frame of UINs with IFABP greater than 10,000 pg/mL
+ifabp_outliers <- data_serum %>%
+  select(Pair, UIN, Case, IFABP, NSAID) %>%
+  filter(IFABP > 10000)
+
+head(ifabp_outliers)
+
+## Save the four UINs
+ifabp_outliers_remove <- unique(ifabp_outliers$UIN)
+
+## create new data frame with the four outliers removed
+data_serum_no_outliers <- data_serum %>% 
+  filter(!UIN %in% ifabp_outliers_remove)
+```
+
+Figure with "outliers" removed.
+
+```{r IFABP_case_outliers_removed_fig, fig.height = 5, fig.width = 6}
+IFABP_case_outliers_removed_p <- data_serum_no_outliers %>%
+  ggplot(aes(x = Case, y = IFABP)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 4) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  stat_summary(fun = median, 
+               geom="crossbar", 
+               color="black",
+               width = 0.6,
+               size = 0.6,
+               show.legend = FALSE) +
+  stat_summary(fun.data = median_iqr,
+               geom="errorbar",
+               color="black",
+               width = 0.3,
+               size = 0.8,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = IFABP_axis) +
+  scale_y_continuous(breaks = seq(-1000, 9000, 1000),
+                     limits = c(-200, 9000)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "wilcox.test",
+                     label = "p.signif",
+                     family = "sans",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag()
+
+IFABP_case_outliers_removed_p
+```
+
+## Claudin 3
+
+### Descriptives
+
+```{r CLDN3_descriptives_case}
+jmv::descriptives(
+    formula = CLDN3 ~ Case,
+    data = data_EDTA,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r CLDN3_non-parametric_case}
+jmv::ttestIS(
+    formula = CLDN3 ~ Case,
+    data = data_EDTA,
+    vars = CLDN3,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r CLDN3_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+
+ymax <- max(data_EDTA$CLDN3, na.rm = TRUE)
+ymin <- min(data_EDTA$CLDN3, na.rm = TRUE)
+
+range <- ymax - ymin
+
+## spacing parameters 
+## vertical bracket leg drop = 3% of axis height
+drop_prop   <- 0.03
+## distance from bracket to p-value text = 3% of axis height
+text_offset <- 0.03   
+
+## derived values
+leg_drop_cldn3    <- range * drop_prop
+text_raise  <- range * text_offset
+
+pval <- "italic(P) == 0.909"
+y_bracket_cldn3 <- 6.9
+
+CLDN3_case_p <- ggplot(data_EDTA, aes(x = Case, y = CLDN3)) +
+  geom_jitter(aes(color = Case),
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) +
+  stat_summary(fun = mean, 
+               geom = "point", 
+               color = "black",
+               size = 5,
+               show.legend = FALSE) +
+  stat_summary(fun.data = mean_sd, 
+               geom = "errorbar", 
+               color = "black",
+               width = 0.3,
+               size = 1.0,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = CLDN3_axis) +
+  scale_y_continuous(breaks = seq(0, 7, 1),
+                     limits = c(0, 7.2),
+                     labels = scales::label_number(accuracy = 1)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  geom_segment(aes(x = 1, xend = 2, y = y_bracket_cldn3, yend = y_bracket_cldn3), inherit.aes = FALSE) +
+  geom_segment(aes(x = 1, xend = 1, y = y_bracket_cldn3, yend = y_bracket_cldn3 - leg_drop_cldn3), inherit.aes = FALSE) +
+  geom_segment(aes(x = 2, xend = 2, y = y_bracket_cldn3, yend = y_bracket_cldn3 - leg_drop_cldn3), inherit.aes = FALSE) +
+  annotate("text",
+           x = 1.5,
+           y = y_bracket_cldn3 + text_raise,
+           label = pval,
+           parse = TRUE,
+           size = 4,
+           family = "sans") +
+  theme_ag()
+
+#view figure
+CLDN3_case_p
+```
+
+
+## Zonulin
+
+### Descriptives
+
+```{r Zonulin_descriptives_case}
+jmv::descriptives(
+    formula = Zonulin ~ Case,
+    data = data_serum,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+non-parametric data:
+
+```{r Zonulin_non-parametric_case}
+jmv::ttestIS(
+    formula = Zonulin ~ Case,
+    data = data,
+    vars = Zonulin,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r Zonulin_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+
+ymax <- max(data_serum$Zonulin, na.rm = TRUE)
+ymin <- min(data_serum$Zonulin, na.rm = TRUE)
+
+range <- ymax - ymin
+
+## spacing parameters 
+## vertical bracket leg drop = 3% of axis height
+drop_prop   <- 0.03
+## distance from bracket to p-value text = 3% of axis height
+text_offset <- 0.03   
+
+## derived values
+leg_drop_zon    <- range * drop_prop
+text_raise  <- range * text_offset
+
+pval <- "italic(P) == 0.156"
+y_bracket_zon <- 69
+
+Zon_case_p <- ggplot(data_serum, aes(x = Case, y = Zonulin)) +
+  geom_jitter(aes(color = Case),
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) +
+  stat_summary(fun = mean, geom = "point", color = "black", size = 5) +
+  stat_summary(fun.data = mean_sd, geom = "errorbar", color = "black", width = 0.3, size = 1.0) +
+  labs(x = "Group", y = Zon_axis) +
+  scale_y_continuous(breaks = seq(0, 70, 10),
+                     limits = c(0, 71)) +  
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  geom_segment(aes(x = 1, xend = 2, y = y_bracket_zon, yend = y_bracket_zon), inherit.aes = FALSE) +
+  geom_segment(aes(x = 1, xend = 1, y = y_bracket_zon, yend = y_bracket_zon - leg_drop_zon), inherit.aes = FALSE) +
+  geom_segment(aes(x = 2, xend = 2, y = y_bracket_zon, yend = y_bracket_zon - leg_drop_zon), inherit.aes = FALSE) +
+  annotate("text",
+           x = 1.5,
+           y = y_bracket_zon + text_raise,
+           label = pval,
+           parse = TRUE,
+           size = 4,
+           family = "sans") +
+  theme_ag()
+
+Zon_case_p
+```
+
+## Lipopolysaccharide Binding Protein
+
+### Descriptives
+
+```{r LBP_descriptives_case}
+jmv::descriptives(
+    formula = LBP ~ Case,
+    data = data_EDTA,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r LBP_parametric_class}
+jmv::ttestIS(
+    formula = LBP ~ Case,
+    data = data_EDTA,
+    vars = LBP,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r LBP_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+
+ymax <- max(data_EDTA$LBP, na.rm = TRUE)
+ymin <- min(data_EDTA$LBP, na.rm = TRUE)
+
+range <- ymax - ymin
+
+## spacing parameters 
+## vertical bracket leg drop = 3% of axis height
+drop_prop  <- 0.03
+## distance from bracket to p-value text = 3% of axis height
+text_offset <- 0.03   
+
+pval <- "italic(P) == 0.545"
+y_bracket_lbp <- 6.4
+
+## derived values
+leg_drop_lbp <- range * drop_prop
+text_raise <- range * text_offset
+
+LBP_case_p <- ggplot(data_EDTA, aes(x = Case, y = LBP)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) + 
+  stat_summary(fun = mean, 
+               geom = "point", 
+               color = "black",
+               size = 5,
+               show.legend = FALSE) +
+  stat_summary(fun.data = mean_sd, 
+               geom = "errorbar", 
+               color = "black",
+               width = 0.3,
+               size = 1.0,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = LBP_axis) +
+  scale_y_continuous(breaks = seq(0.0, 6.0, 1.0),
+                     limits = c(0.0, 6.6),
+                     labels = scales::label_number(accuracy = 1)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  geom_segment(aes(x = 1, xend = 2, y = y_bracket_lbp, yend = y_bracket_lbp), inherit.aes = FALSE) +
+  geom_segment(aes(x = 1, xend = 1, y = y_bracket_lbp, yend = y_bracket_lbp - leg_drop_lbp), inherit.aes = FALSE) +
+  geom_segment(aes(x = 2, xend = 2, y = y_bracket_lbp, yend = y_bracket_lbp - leg_drop_lbp), inherit.aes = FALSE) +
+  annotate("text",
+           x = 1.5,
+           y = y_bracket_lbp + text_raise,
+           label = pval,
+           parse = TRUE,
+           size = 4,
+           family = "sans") +
+  theme_ag()
+
+#view figure
+LBP_case_p
+```
+
+## Soluble Cluster of Differentiation 14
+
+### Descriptives
+
+```{r sCD14_descriptives_case}
+jmv::descriptives(
+    formula = sCD14 ~ Case,
+    data = data_EDTA,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+non-parametric data:
+
+```{r sCD14_non_parametric_case}
+jmv::ttestIS(
+    formula = sCD14 ~ Case,
+    data = data_EDTA,
+    vars = sCD14,
+    mann = TRUE,
+    students = FALSE,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r sCD14_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+
+ymax <- max(data_EDTA$sCD14, na.rm = TRUE)
+ymin <- min(data_EDTA$sCD14, na.rm = TRUE)
+
+range <- ymax - ymin
+
+## spacing parameters 
+## vertical bracket leg drop = 3% of axis height
+drop_prop   <- 0.03
+## distance from bracket to p-value text = 4% of axis height
+text_offset <- 0.04   
+
+## derived values
+leg_drop_scd14    <- range * drop_prop
+text_raise  <- range * text_offset
+
+pval <- "italic(P) == 0.979"
+y_bracket_scd14 <- 2
+
+sCD14_case_p <- ggplot(data_EDTA, aes(x = Case, y = sCD14)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) +
+  stat_summary(fun = median, 
+               geom ="crossbar", 
+               color ="black",
+               width = 0.6,
+               size = 0.6,
+               show.legend = FALSE) +
+  stat_summary(fun.data = median_iqr,
+               geom ="errorbar",
+               color ="black",
+               width = 0.3,
+               size = 0.8,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = sCD14_axis) +
+  scale_y_continuous(breaks = seq(0, 2, .25),
+                     limits = c(0, 2.1),
+                     labels = scales::label_number(accuracy = 0.01)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  geom_segment(aes(x = 1, xend = 2, y = y_bracket_scd14, yend = y_bracket_scd14), inherit.aes = FALSE) +
+  geom_segment(aes(x = 1, xend = 1, y = y_bracket_scd14, yend = y_bracket_scd14 - leg_drop_scd14), inherit.aes = FALSE) +
+  geom_segment(aes(x = 2, xend = 2, y = y_bracket_scd14, yend = y_bracket_scd14 - leg_drop_scd14), inherit.aes = FALSE) +
+  annotate("text",
+           x = 1.5,
+           y = y_bracket_scd14 + text_raise,
+           label = pval,
+           parse = TRUE,
+           size = 4,
+           family = "sans") +
+  theme_ag()
+
+#view figure
+sCD14_case_p
+```
+
+# Sensitivity Analysis
+
+## Data
+
+Now create the two data frames for serum and EDTA analysis as done previously. Remove NSAID users and their respective matched-pair UIN.    
+Serum:
+
+```{r sen_data_serum}
+## Create data frame for serum sensitivity analysis
+sen_data_serum <- data_serum
+
+## Create object which contains NSAID users
+NSAID_users_serum <- sen_data_serum %>% 
+  ## Filter rows where NSAID is "Yes"
+  dplyr::filter(NSAID == "Yes")
+
+## Extract unique Pair values
+NSAID_pairs_serum <- unique(NSAID_users_serum$Pair)
+
+## Count number of NSAID users
+length(unique(NSAID_users_serum$UIN))
+
+## Create serum data frame for sensitivity analysis
+sen_data_serum <- sen_data_serum %>%
+  ## Remove NSAID pairs from data
+  dplyr::filter(!Pair %in% NSAID_pairs_serum)
+
+## Updated numbers:
+## Cohort number
+length(unique(sen_data_serum$UIN))
+
+## Number per group (i.e. control/EHI)
+length(unique(sen_data_serum$Pair))
+```
+
+EDTA:
+
+```{r sen_data_EDTA}
+## Create data frame for EDTA sensitivity analysis
+sen_data_EDTA <- data_EDTA
+
+## Create object which contains NSAID users
+NSAID_users_EDTA <- sen_data_EDTA %>% 
+  ## Filter rows where NSAID is "Yes"
+  dplyr::filter(NSAID == "Yes")
+
+## Extract unique Pair values
+NSAID_pairs_EDTA <- unique(NSAID_users_EDTA$Pair)
+
+## Count number of NSAID users
+length(unique(NSAID_users_EDTA$UIN))
+
+## Create EDTA data frame for sensitivity analysis
+sen_data_EDTA <- sen_data_EDTA %>%
+  ## Remove NSAID pairs from data
+  dplyr::filter(!Pair %in% NSAID_pairs_EDTA)
+
+## Updated numbers:
+## Cohort number
+length(unique(sen_data_EDTA$UIN))
+
+## Number per group (i.e. control/EHI)
+length(unique(sen_data_EDTA$Pair))
+```
+
+As part of sensitivity analysis, this section will analyse the blood biomarkers of EHI cases vs their pair matched controls, where NSAID users and their respective pair are excluded. The N is presented in the descriptive section of each biomarker. 
+
+## Intestinal Fatty Acid Binding Protein
+
+### Descriptives
+
+```{r sen_IFABP_descriptives_case}
+jmv::descriptives(
+    formula = IFABP ~ Case,
+    data = sen_data_serum,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+non-parametric data:
+
+```{r sen_IFABP_non-parametric_case}
+jmv::ttestIS(
+    formula = IFABP ~ Case,
+    data = sen_data_serum,
+    vars = IFABP,
+    students = FALSE,
+    mann = TRUE,
+    norm = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r sen_IFABP_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+sen_IFABP_case_p <- ggplot(sen_data_serum, aes(x = Case, y = IFABP)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) + 
+  #geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  stat_summary(fun = median, 
+               geom="crossbar", 
+               color="black",
+               width = 0.6,
+               size = 0.6,
+               show.legend = FALSE) +
+  stat_summary(fun.data = median_iqr,
+               geom="errorbar",
+               color="black",
+               width = 0.3,
+               size = 0.8,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = IFABP_axis) +
+  scale_y_log10(labels = scales::label_number(big.mark = ",")) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "wilcox.test",
+                     label = "p.signif",
+                     family = "sans",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag() +
+  ## left align y axis text
+  theme(axis.text.y = element_text(hjust = 1))
+
+#view figure
+sen_IFABP_case_p
+```
+
+## Claudin 3
+
+### Descriptives
+
+```{r sen_CLDN3_descriptives_case}
+jmv::descriptives(
+    formula = CLDN3 ~ Case,
+    data = sen_data_EDTA,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r sen_CLDN3_non-parametric_case}
+jmv::ttestIS(
+    formula = CLDN3 ~ Case,
+    data = sen_data_EDTA,
+    vars = CLDN3,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r sen_CLDN3_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+sen_CLDN3_case_p <- ggplot(sen_data_EDTA, aes(x = Case, y = CLDN3)) +
+  geom_jitter(aes(color = Case),
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) + 
+  stat_summary(fun = mean,
+               geom = "point",
+               color = "black",
+               size = 5,
+               show.legend = FALSE) +
+  stat_summary(fun.data = mean_sd,
+               geom = "errorbar",
+               color = "black",
+               width = 0.3,
+               size = 1.0,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = CLDN3_axis) +
+  scale_y_continuous(breaks = seq(0, 7, 1),
+                     limits = c(0, 7),
+                     labels = scales::label_number(accuracy = 1)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "t.test",
+                     label = "p.signif",
+                     family = "sans",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag()
+
+#view figure
+sen_CLDN3_case_p
+```
+
+## Zonulin
+
+### Descriptives
+
+```{r sen_Zonulin_descriptives_case}
+jmv::descriptives(
+    formula = Zonulin ~ Case,
+    data = sen_data_serum,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+non-parametric data:
+
+```{r sen_Zonulin_non-parametric_case}
+jmv::ttestIS(
+  formula = Zonulin ~ Case,
+  data = sen_data_serum,
+  vars = Zonulin,
+  norm = TRUE,
+  eqv = TRUE,
+  effectSize = TRUE)
+```
+
+### Figure
+
+``` {r sen_Zonulin_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+sen_Zon_case_p <- ggplot(sen_data_serum, aes(x = Case, y = Zonulin)) +
+  geom_jitter(aes(color = Case),
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) +
+  stat_summary(fun = mean,
+               geom = "point",
+               color = "black",
+               size = 5,
+               show.legend = FALSE) +
+  stat_summary(fun.data = mean_sd,
+               geom = "errorbar",
+               color = "black",
+               width = 0.3,
+               size = 1.0,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = Zon_axis) +
+  scale_y_continuous(breaks = seq(0, 70, 10),
+                     limits = c(0, 70)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "t.test",
+                     label = "p.signif",
+                     family = "sans",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag()
+
+#view figure
+sen_Zon_case_p
+```
+
+## Lipopolysaccharide Binding Protein
+
+### Descriptives
+
+```{r sen_LBP_descriptives_case}
+jmv::descriptives(
+    formula = LBP ~ Case,
+    data = sen_data_EDTA,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r sen_LBP_parametric_class}
+jmv::ttestIS(
+    formula = LBP ~ Case,
+    data = sen_data_EDTA,
+    vars = LBP,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r sen_LBP_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+sen_LBP_case_p <- ggplot(sen_data_EDTA, aes(x = Case, y = LBP)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) + 
+  stat_summary(fun = mean, 
+               geom = "point", 
+               color = "black",
+               size = 5,
+               show.legend = FALSE) +
+  stat_summary(fun.data = mean_sd, 
+               geom = "errorbar", 
+               color = "black",
+               width = 0.3,
+               size = 1.0,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = LBP_axis) +
+  scale_y_continuous(breaks = seq(0.0, 6.0, 1.0),
+                     limits = c(0.0, 6.5),
+                     labels = scales::label_number(accuracy = 1)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "t.test",
+                     label = "p.signif",
+                     family = "sans",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag()
+
+#view figure
+sen_LBP_case_p
+```
+
+## Soluble Cluster of Differentiation 14
+
+### Descriptives
+
+```{r sen_sCD14_descriptives_case}
+jmv::descriptives(
+    formula = sCD14 ~ Case,
+    data = sen_data_EDTA,
+    iqr = TRUE,
+    sw = TRUE)
+```
+
+### Test of Difference
+
+parametric data:
+
+```{r sen_sCD14_parametric_case}
+jmv::ttestIS(
+    formula = sCD14 ~ Case,
+    data = sen_data_EDTA,
+    vars = sCD14,
+    norm = TRUE,
+    eqv = TRUE,
+    effectSize = TRUE)
+```
+
+### Figure
+
+``` {r sen_sCD14_case_fig, fig.height = 5, fig.width = 6}
+set.seed(123)
+sen_sCD14_case_p <- ggplot(sen_data_EDTA, aes(x = Case, y = sCD14)) +
+  geom_jitter(aes(color = Case), 
+              width = 0.3,
+              height = 0,
+              alpha = 0.6,
+              size = 3) + 
+  stat_summary(fun = mean, 
+               geom = "point", 
+               color = "black",
+               size = 5,
+               show.legend = FALSE) +
+  stat_summary(fun.data = mean_sd, 
+               geom = "errorbar", 
+               color = "black",
+               width = 0.3,
+               size = 1.0,
+               show.legend = FALSE) +
+  labs(x = "Group",
+       y = sCD14_axis) +
+  scale_y_continuous(breaks = seq(0, 2, .25),
+                     limits = c(0, 2.1),
+                     labels = scales::label_number(accuracy = 0.01)) +
+  scale_x_discrete(labels = c("Non-EHI", "EHI")) +
+  scale_color_manual(values = group_cols) +
+  stat_compare_means(comparisons = list(c("EHI", "Control")),
+                     method = "t.test",
+                     label = "p.signif",
+                     family = "sans",
+                     paired = FALSE,
+                     bracket.size = 0.6,
+                     vjust = -0.2) +
+  theme_ag()
+
+#view figure
+sen_sCD14_case_p
+```
+
+# Figure Panel
+
+Create a panel of figures.
+
+```{r biomarkers_panel, fig.height = 9, fig.width = 12}
+## arrange by biomarker type
+## Enterocyte damage & tight junction integrity
+row1 <- ggarrange(IFABP_case_p, 
+                  Zon_case_p, 
+                  CLDN3_case_p,
+                  ncol = 3, 
+                  #labels = LETTERS[1:3],
+                  labels = paste0("(", letters[1:3], ")"),
+                  font.label = list(size = 14, 
+                                    face = "bold",
+                                    family = "sans"))
+## Microbial translocation
+row2 <- ggarrange(LBP_case_p, 
+                  sCD14_case_p,
+                  ncol = 3, 
+                  #labels = LETTERS[4:5],
+                  labels = paste0("(", letters[4:5], ")"),
+                  font.label = list(size = 14, 
+                                    face = "bold",
+                                    family = "sans"))
+## Combine rows
+biomarkers_case_panel <- ggarrange(row1, row2, nrow=2)
+## Show panel
+biomarkers_case_panel
+```
+
+Add annotation: 
+
+```{r biomarkers_annotation_panel, fig.height = 9, fig.width = 13}
+## Annotate row1
+row1ann <- annotate_figure(row1,
+                           left = text_grob("Enterocyte damage &\ntight junction integrity\n", 
+                                            rot = 90, 
+                                            size = 16, 
+                                            face = "bold",
+                                            family = "sans"))
+
+## Annotate row2
+row2ann <- annotate_figure(row2,
+                           left = text_grob("\nMicrobial translocation\n", 
+                                            rot = 90, 
+                                            size = 16, 
+                                            face = "bold",
+                                            family = "sans"))
+## Combine rows
+biomarkers_case_annotation_panel <- ggarrange(row1ann, row2ann, nrow=2)
+## Show panel
+biomarkers_case_annotation_panel
+
+## Save
+ggsave(
+  filename = paste0(
+    analysis_dir,
+    "figs/biomarkers_annotation_panel",
+    ".tiff"
+  ),
+  plot = biomarkers_case_annotation_panel,
+  height = 9,
+  width = 13,
+  unit = "in",
+  dpi = 600
+)
+
+## Save
+ggsave(
+  filename = paste0(
+    analysis_dir,
+    "figs/biomarkers_annotation_panel",
+    ".png"
+  ),
+  plot = biomarkers_case_annotation_panel,
+  height = 9,
+  width = 13,
+  unit = "in",
+  dpi = 600
+)
+
+## Save
+ggsave(
+  filename = paste0(
+    analysis_dir,
+    "figs/biomarkers_annotation_panel",
+    ".pdf"
+  ),
+  plot = biomarkers_case_annotation_panel,
+  height = 9,
+  width = 13,
+  unit = "in",
+  dpi = 600
+)
+```
+
+# Session info
+
+``` {r sessionInfo}
+sinfo <- sessionInfo()
+sinfo
+save.image(paste0(analysis_dir, "/prospective_analysis_manuscript_biomarkers.Rout"))
+```
