@@ -1,6 +1,6 @@
 # 2024_Prospective_EHI_GI_paradigm
 
-This repository contains data analysis scripts for publication 'Gastrointestinal microbiota and barrier integrity in individuals who develop exertional heat illness and pair-matched controls'  
+This repository contains data analysis scripts for publication 'Gastrointestinal microbiota and barrier integrity in individuals who develop exertional heat illness and pair-matched controls' by Gould et al. (2026). DOI:   
 
 Folder/file description:  
 
